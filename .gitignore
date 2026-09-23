@@ -1,0 +1,37 @@
+# Competition data and archives
+*.parquet
+*.tar.gz
+*.zip
+datasets/
+data/
+checkpoints/
+logs/
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Experiment outputs
+runs/
+outputs/
+wandb/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
