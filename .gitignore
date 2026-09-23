@@ -2,8 +2,10 @@
 *.parquet
 *.tar.gz
 *.zip
-datasets/
-data/
+# Anchored to the repository root so source packages such as src/data/ stay tracked.
+/datasets/
+/data/
+/wnn_connectome_starterpack/
 checkpoints/
 logs/
 *.onnx
