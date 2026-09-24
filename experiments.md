@@ -85,6 +85,7 @@ validation row, ignoring the public mask.
 | T2.1a | 2.1 Loss | Pure weighted Pearson loss (1 − WP per training window) instead of MSE | 0.626199 | 0.452891 | −0.026844 | 0.000 | 33.6 / 50.2 | Rejected: much worse |
 | T2.1b | 2.1 Loss | Hybrid loss: 0.8 × weighted Pearson + 0.2 × MSE | **0.667873** | 0.497689 | +0.014831 | 1.000 | 32.1 / 51.2 | **Accepted** |
 | T2.2a | 2.2 Tanh clamp | Output 2·tanh(z/τ) with τ = 2 (unit slope at 0) | **0.669708** | 0.498827 | +0.001835 | 1.000 | 31.5 / 55.7 | **Accepted** (just above the margin) |
+| T2.2b | 2.2 Tanh clamp | τ = 1 instead of 2 (slope 2 at 0, earlier saturation) | 0.665566 | 0.492818 | −0.004142 | 0.000 | 37.4 / 51.2 | Rejected: worse |
 
 ## Notes
 
@@ -165,3 +166,9 @@ baseline's holdout from 0.392 to 0.402. The hybrid model's outputs have
 sd 0.40 and none reach ±2, so the gain comes from compressing the tails, not
 from clamping. The clamp adds three small ops; the rescaled latency moved from
 51.2 to 55.7 µs, partly from noise in the reference runs.
+
+**T2.2b.** A sharper clamp, 2·tanh(z), saturates for |z| above about 0.5, which
+compresses much of the model's range (sd about 0.4). It also distorts the warm
+start: the untrained holdout WP fell to 0.369, against 0.402 at τ = 2. Training
+recovered only partly (holdout 0.4265 vs 0.4344), and validation WP dropped by
+0.0041.
