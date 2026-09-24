@@ -90,6 +90,7 @@ validation row, ignoring the public mask.
 | T2.2d | 2.2 Tanh clamp | τ = 8 instead of 4 (extends the sweep past its edge) | **0.677236** | 0.505950 | +0.003259 | 1.000 | 36.2 / 53.4 | **Accepted** |
 | T2.2e | 2.2 Tanh clamp | τ = 16 instead of 8 | 0.678451 | 0.506879 | +0.001215 | 1.000 | 35.1 / 53.4 | Rejected: inside the noise margin |
 | T3.1a | 3.1 Residual GRU | Residual block 2, hidden 128: + α·input, α learnable, 0 at init | 0.677236 | 0.505928 | −0.000000 | 0.471 | 38.5 / 56.9 | Rejected: no effect |
+| T3.1b | 3.1 Residual GRU | Hidden 96, residual, warm start from the baseline's 96 most-used units | 0.676707 | 0.503906 | −0.000530 | 0.196 | 31.8 / 50.6 | Rejected: a tie, not a gain |
 
 ## Notes
 
@@ -215,3 +216,11 @@ training can open the skip path if it helps. It moved only to α = −0.018, and
 no weight drifted more than 0.0024 from the champion's. WP matched the
 champion to six decimals. So in one fine-tuning epoch, the model does not use
 a skip path around its second GRU. The two extra ops still cost latency.
+
+**T3.1b.** Narrowing to 96 units keeps, in each block, the units the next layer
+or the head relies on most. The pruned warm start scored 0.41498 on the
+holdout at step 0, against 0.433 for the full model. After the epoch,
+validation WP was within noise of the champion (−0.0005, P = 0.20) at lower
+latency (50.6 µs rescaled, against 53.4). That is a genuine trade-off, but the
+rule accepts only improvements, so it was reverted. It is the better base if a
+later change needs latency headroom.
