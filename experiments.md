@@ -93,6 +93,7 @@ validation row, ignoring the public mask.
 | T3.1b | 3.1 Residual GRU | Hidden 96, residual, warm start from the baseline's 96 most-used units | 0.676707 | 0.503906 | −0.000530 | 0.196 | 31.8 / 50.6 | Rejected: a tie, not a gain |
 | T3.1c | 3.1 Residual GRU | Hidden 64, residual, warm start from the baseline's 64 most-used units | 0.670673 | 0.494898 | −0.006564 | 0.000 | 28.9 / 43.5 | Rejected: worse |
 | T3.2 | 3.2 LayerNorm | LayerNorm on each gate's input and recurrent pre-activations, warm start | 0.672211 | 0.496028 | −0.005026 | 0.000 | 62.1 / 97.1 | Rejected: worse and over both latency limits |
+| T3.3 | 3.3 LRU | 2 diagonal LRU layers (width 128, complex state 128), from scratch, lr 1e-3 | 0.648288 | 0.465312 | −0.028948 | 0.000 | 61.2 / 92.3 | Rejected: worse and over both latency limits |
 
 ## Notes
 
@@ -250,3 +251,19 @@ one epoch recovered only to 0.419 (champion 0.445). Validation WP fell by
 120 ONNX ops, against one fused GRU op, so latency was 62.1 µs even as
 measured, over the literal 60 µs rule. Training was 40% slower too
 (40k rows/s, against 73k).
+
+**T3.3.** The LRU (Orvieto et al. 2023) keeps a complex diagonal state with
+|λ| < 1. That state is stored as a real [Re, Im] vector so it exports, and
+each layer adds a residual MLP. It has no pretrained weights, so it trains from
+scratch. It also uses a from-scratch learning rate, 1e-3 instead of 2e-4, a
+necessary second difference from the champion recipe. In one epoch from random
+weights it reached 0.648, close to the fine-tuned MSE GRU (0.653), so the
+architecture is competitive in accuracy. But batch-1 inference pays per-op
+overhead: 61.2 µs measured, about 1.7× the starter pack's fused GRU op.
+Row-by-row parity was exact (7e-7).
+
+**Cycle 3 summary.** No architecture change beat the champion within the
+latency limits. The residual path went unused. Narrowing to 96 units ties at
+lower latency, and 64 units costs 0.007. The LayerNorm cell and the LRU are
+both too slow at batch 1 as unfused ONNX graphs. The LRU is the one worth
+revisiting with a longer from-scratch schedule and a fused or folded export.
