@@ -184,8 +184,13 @@ def git(*args: str) -> str:
 
 
 def run(config: dict, run_dir: Path) -> dict:
+    untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
+    for name in untracked:  # new files are not in git_diff; keep their contents with the run
+        target = run_dir / "untracked" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / name, target)
     record = {"git_head": git("rev-parse", "HEAD"), "git_status": git("status", "--porcelain"),
-              "git_diff": git("diff", "HEAD"),
+              "git_diff": git("diff", "HEAD"), "untracked_files": untracked,
               "train_file": {"row_groups": pq.ParquetFile(TRAIN).metadata.num_row_groups,
                              "bytes": TRAIN.stat().st_size}}
     torch.manual_seed(config["seed"])
