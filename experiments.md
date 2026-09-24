@@ -80,6 +80,7 @@ validation row, ignoring the public mask.
 | CAL1 | Calibration | E01 recipe, seed 1 | 0.653276 | 0.473229 | +0.000234 | 0.765 | 33.3 / 51.3 | Calibration only |
 | CAL2 | Calibration | E01 recipe, seed 2 | 0.651986 | 0.471799 | −0.001056 | 0.000 | 32.7 / 53.0 | Calibration only |
 | T1.1 | 1.1 OFI | Add sum(dp·dv) over the 4 trade slots, i0 and i1 (2 inputs) | 0.653113 | 0.473619 | +0.000071 | 1.000 | 33.9 / 55.2 | Rejected: below the 0.0016 margin |
+| T1.2 | 1.2 Volume imbalance | Add (Σ bid v − Σ ask v) / (\|Σ bid\| + \|Σ ask\|), i0 and i1 (2 inputs) | 0.653030 | 0.473479 | −0.000012 | 0.089 | 38.2 / 59.9 | Rejected: no gain, at the latency ceiling |
 
 ## Notes
 
@@ -111,3 +112,13 @@ tenth of the seed noise, and all-rows WP moved by +0.00008. The holdout curve
 tracked the control to the fourth decimal. It cost about 1.5 µs pinned, so it
 was rejected and reverted. The trade columns are rank-transformed, so their
 product is not the financial dp·dv, which likely explains the null result.
+
+**T1.2.** Hypothesis: book-side volume imbalance is a classic short-horizon
+predictor of price moves. Here it is neutral: WP moved by −0.000012 and
+all-rows WP by −0.00006. The imbalance is a fixed linear combination of inputs
+the first GRU layer already sees, divided by a normalizer, so the model gains
+little it could not already form. It cost about 5 µs pinned (a matmul plus
+slices, abs, add and divide), which alone brought the rescaled latency to the
+ceiling. The denominator is |Σ bid| + |Σ ask| rather than the literal
+Σ v_total, because the rank-transformed volumes are signed and their sum
+crosses zero (min |Σ v_total| 4.6e-5 over four validation sequences).
