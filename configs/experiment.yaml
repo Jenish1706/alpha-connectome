@@ -1,7 +1,7 @@
 # The candidate for scripts/run_experiment.py. Each iteration starts from the
 # champion's configuration (this file as committed) and changes one thing.
-name: E01-finetune-control
-description: Control. Fine-tune the baseline for one epoch on 3,872 training sequences with MSE.
+name: T2.1b-hybrid-loss
+description: Test 2.1b. Train with a hybrid loss, 0.8 x weighted Pearson loss + 0.2 x MSE, instead of MSE.
 seed: 0
 init: baseline        # baseline = warm start from the starter pack ONNX; scratch = random init
 features: []          # names from src/features.py FEATURES, appended to the 112 raw inputs
@@ -16,7 +16,7 @@ train:
   weight_decay: 0.0
   grad_clip: 1.0
   warmup_steps: 20
-  loss: mse
+  loss: hybrid
   fit_sequences: 3872 # sample row groups 0..3871 are fitted
   holdout: 128        # row groups 3872..3999: a diagnostic, never used for selection
   eval_every: 4       # holdout evaluations every N sequence batches
