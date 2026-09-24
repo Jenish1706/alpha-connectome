@@ -81,6 +81,7 @@ validation row, ignoring the public mask.
 | CAL2 | Calibration | E01 recipe, seed 2 | 0.651986 | 0.471799 | −0.001056 | 0.000 | 32.7 / 53.0 | Calibration only |
 | T1.1 | 1.1 OFI | Add sum(dp·dv) over the 4 trade slots, i0 and i1 (2 inputs) | 0.653113 | 0.473619 | +0.000071 | 1.000 | 33.9 / 55.2 | Rejected: below the 0.0016 margin |
 | T1.2 | 1.2 Volume imbalance | Add (Σ bid v − Σ ask v) / (\|Σ bid\| + \|Σ ask\|), i0 and i1 (2 inputs) | 0.653030 | 0.473479 | −0.000012 | 0.089 | 38.2 / 59.9 | Rejected: no gain, at the latency ceiling |
+| T1.3 | 1.3 VWAP mid spread | Add mid(i0) − mid(i1), mid = mean of bid and ask VWAPs (1 input) | 0.653062 | 0.473547 | +0.000020 | 1.000 | 43.9 / 68.7 | Rejected: over the latency ceiling, no gain |
 
 ## Notes
 
@@ -122,3 +123,18 @@ slices, abs, add and divide), which alone brought the rescaled latency to the
 ceiling. The denominator is |Σ bid| + |Σ ask| rather than the literal
 Σ v_total, because the rank-transformed volumes are signed and their sum
 crosses zero (min |Σ v_total| 4.6e-5 over four validation sequences).
+
+**T1.3.** Hypothesis: the cross-instrument mid-price spread carries lead-lag
+information between i0 and i1. The gain is +0.000020, a thirtieth of the seed
+noise, and it cost about 9.5 µs pinned: 44-column gathers, a sigmoid, reshapes,
+reductions and divisions, 68.7 µs rescaled. Each level is weighted by
+sigmoid(1.702 v), about the volume's percentile, because the rank-transformed
+volumes are signed and cannot weight a VWAP directly. The price-like columns
+are also rank-transformed per column, so a difference of "mids" across
+instruments is not a price spread, which likely explains the null result.
+
+**Cycle 1 summary.** None of the three engineered features helped: the gains
+were +0.00007, −0.00001 and +0.00002, against a 0.0016 noise margin. The
+anonymising rank transforms remove the price and volume arithmetic these
+features rely on, and the GRU already sees every raw column. Each feature also
+costs 1.5-9.5 µs per call, out of about 11 µs of rescaled headroom.
