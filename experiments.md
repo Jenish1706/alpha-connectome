@@ -88,6 +88,7 @@ validation row, ignoring the public mask.
 | T2.2b | 2.2 Tanh clamp | τ = 1 instead of 2 (slope 2 at 0, earlier saturation) | 0.665566 | 0.492818 | −0.004142 | 0.000 | 37.4 / 51.2 | Rejected: worse |
 | T2.2c | 2.2 Tanh clamp | τ = 4 instead of 2 (slope 0.5 at 0, nearly linear in range) | **0.673977** | 0.503062 | +0.004269 | 1.000 | 34.1 / 54.1 | **Accepted** |
 | T2.2d | 2.2 Tanh clamp | τ = 8 instead of 4 (extends the sweep past its edge) | **0.677236** | 0.505950 | +0.003259 | 1.000 | 36.2 / 53.4 | **Accepted** |
+| T2.2e | 2.2 Tanh clamp | τ = 16 instead of 8 | 0.678451 | 0.506879 | +0.001215 | 1.000 | 35.1 / 53.4 | Rejected: inside the noise margin |
 
 ## Notes
 
@@ -190,3 +191,20 @@ is mainly a smaller output scale at the warm start rather than clamping. That
 starting scale seems to shape how the hybrid loss fine-tunes the network. The
 untrained holdout WP at τ = 8 was 0.433, and the trained holdout reached 0.445.
 τ = 16 is next, to find where the curve flattens.
+
+**T2.2e.** τ = 16 gained only +0.0012, inside the 0.0016 margin, and the
+holdout ended slightly below τ = 8 (0.4442 vs 0.4447). The sweep has flattened,
+so τ = 8 stays.
+
+**Cycle 2 summary.** The loss was the big lever. The hybrid loss added +0.0148.
+Pure Pearson lost 0.027, because without an MSE anchor the output scale and
+level drifted and 30% of predictions ended beyond the metric's clip. The tanh
+temperature added another +0.0074 over τ = 2 → 4 → 8, where the curve
+flattens:
+
+| τ | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| WP | 0.6656 | 0.6697 | 0.6740 | 0.6772 | 0.6785 |
+
+For large τ the clamp mostly shrinks the warm start's output scale, so the
+gain is better read as "start the output small" than as clamping.
