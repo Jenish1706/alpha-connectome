@@ -91,6 +91,7 @@ validation row, ignoring the public mask.
 | T2.2e | 2.2 Tanh clamp | τ = 16 instead of 8 | 0.678451 | 0.506879 | +0.001215 | 1.000 | 35.1 / 53.4 | Rejected: inside the noise margin |
 | T3.1a | 3.1 Residual GRU | Residual block 2, hidden 128: + α·input, α learnable, 0 at init | 0.677236 | 0.505928 | −0.000000 | 0.471 | 38.5 / 56.9 | Rejected: no effect |
 | T3.1b | 3.1 Residual GRU | Hidden 96, residual, warm start from the baseline's 96 most-used units | 0.676707 | 0.503906 | −0.000530 | 0.196 | 31.8 / 50.6 | Rejected: a tie, not a gain |
+| T3.1c | 3.1 Residual GRU | Hidden 64, residual, warm start from the baseline's 64 most-used units | 0.670673 | 0.494898 | −0.006564 | 0.000 | 28.9 / 43.5 | Rejected: worse |
 
 ## Notes
 
@@ -224,3 +225,17 @@ validation WP was within noise of the champion (−0.0005, P = 0.20) at lower
 latency (50.6 µs rescaled, against 53.4). That is a genuine trade-off, but the
 rule accepts only improvements, so it was reverted. It is the better base if a
 later change needs latency headroom.
+
+**T3.1c.** At 64 units the pruned warm start began at 0.33781 on the holdout and
+ended at 0.4186, against 0.4447 for the champion. Validation WP fell by 0.0066.
+It is by far the fastest variant (43.5 µs rescaled), but one fine-tuning epoch
+does not recover the capacity the pruning removed.
+
+**3.1 summary.** WP by width:
+
+| Hidden | 128 | 96 | 64 |
+|---|---|---|---|
+| WP | 0.6772 | 0.6767 | 0.6707 |
+
+The residual path is unused at 128. Dropping to 96 units is free in accuracy
+and saves about 3 µs rescaled, and 64 units costs 0.007 WP.
