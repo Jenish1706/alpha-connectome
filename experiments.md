@@ -68,3 +68,13 @@ validation row, ignoring the public mask.
 | ID | Test | Change | WP | All rows | Δ vs champion | P(better) | Latency µs raw / rescaled | Outcome |
 |---|---|---|---|---|---|---|---|---|
 | E00 | Baseline | Starter pack GRU weights, untrained | 0.617052 | 0.440156 | — | — | 30.0 / 51.9 | Accepted: first champion |
+| E01 | Control | Fine-tune the baseline 1 epoch: MSE, lr 2e-4 cosine, 3,872 sequences | 0.653042 | 0.473540 | +0.035990 | 1.000 | 31.6 / 48.2 | Accepted |
+
+## Notes
+
+**E01 (control).** One epoch of fine-tuning, 1,200 steps, lifted validation WP
+by 0.036, and WP over all required rows rose from 0.440 to 0.474. The holdout
+WP (all required rows) went 0.392 → 0.397 → 0.408 → 0.410 → 0.409 over the
+epoch, so it was flattening at the end. The baseline shows no in-sample
+advantage on the training sample, so it was likely undertrained rather than
+fitted to these sequences. Every later change is made on top of this recipe.

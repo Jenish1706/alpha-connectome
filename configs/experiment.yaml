@@ -1,7 +1,7 @@
 # The candidate for scripts/run_experiment.py. Each iteration starts from the
 # champion's configuration (this file as committed) and changes one thing.
-name: baseline
-description: Starter pack GRU baseline weights, unchanged (no training).
+name: E01-finetune-control
+description: Control. Fine-tune the baseline for one epoch on 3,872 training sequences with MSE.
 seed: 0
 init: baseline        # baseline = warm start from the starter pack ONNX; scratch = random init
 features: []          # names from src/features.py FEATURES, appended to the 112 raw inputs
@@ -9,7 +9,7 @@ model:
   hidden: 128
   layers: 2
 train:
-  epochs: 0           # passes over the fitting sequences; 0 scores the initial weights
+  epochs: 1           # passes over the fitting sequences; 0 scores the initial weights
   batch_sequences: 256
   chunk: 250          # truncated-BPTT window
   lr: 2.0e-4

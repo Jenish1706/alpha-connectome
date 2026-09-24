@@ -1,19 +1,19 @@
 {
-  "name": "baseline",
-  "description": "Starter pack GRU baseline weights, unchanged (no training).",
-  "wp": 0.6170523820793217,
-  "t0": 0.5879126412765493,
-  "t1": 0.6461921228820939,
-  "wp_all_rows": 0.44015626193850704,
-  "latency_us": 30.011214511278197,
-  "latency_scaled_us": 51.93042150114381,
-  "latency_ratio": 0.961674472243404,
-  "latency_pinned_us": 30.904314260651628,
-  "reference_latency_us": 33.331338571428574,
-  "run_dir": "runs/20260924T080600-baseline",
+  "name": "E01-finetune-control",
+  "description": "Control. Fine-tune the baseline for one epoch on 3,872 training sequences with MSE.",
+  "wp": 0.6530423344135633,
+  "t0": 0.6446545457447723,
+  "t1": 0.6614301230823543,
+  "wp_all_rows": 0.47353965940763126,
+  "latency_us": 31.60034807017544,
+  "latency_scaled_us": 48.208465939732356,
+  "latency_ratio": 0.8927493692543029,
+  "latency_pinned_us": 33.56539245614035,
+  "reference_latency_us": 35.017457969924806,
+  "run_dir": "runs/20260924T081141-E01-finetune-control",
   "config": {
-    "name": "baseline",
-    "description": "Starter pack GRU baseline weights, unchanged (no training).",
+    "name": "E01-finetune-control",
+    "description": "Control. Fine-tune the baseline for one epoch on 3,872 training sequences with MSE.",
     "seed": 0,
     "init": "baseline",
     "features": [],
@@ -22,7 +22,7 @@
       "layers": 2
     },
     "train": {
-      "epochs": 0,
+      "epochs": 1,
       "batch_sequences": 256,
       "chunk": 250,
       "lr": 0.0002,
@@ -35,5 +35,5 @@
       "eval_every": 4
     }
   },
-  "finished": "2026-09-24T08:10:31+00:00"
+  "finished": "2026-09-24T08:33:20+00:00"
 }
