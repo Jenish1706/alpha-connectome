@@ -21,9 +21,12 @@ from src.models.features import N_RAW, FeatureLayer
 
 
 class RecurrentRegressor(nn.Module):
-    def __init__(self, features=(), hidden: int = 128, layers: int = 2):
+    def __init__(self, features=(), hidden: int = 128, layers: int = 2,
+                 tanh_tau: float | None = None):
         super().__init__()
         self.input_dim, self.hidden, self.layers = N_RAW, hidden, layers
+        # Optional soft clamp of the outputs into the metric's [-2, 2]: 2 tanh(z / tau).
+        self.tanh_tau = tanh_tau
         self.features = FeatureLayer(features)
         self.blocks = nn.ModuleList(
             nn.ModuleDict({"gru": nn.GRU(self.features.width if i == 0 else hidden, hidden,
@@ -41,7 +44,10 @@ class RecurrentRegressor(nn.Module):
         for block, h in zip(self.blocks, state, strict=True):
             x, h = block["gru"](x, h)
             new_state.append(h)
-        return self.reg_head(x), new_state
+        out = self.reg_head(x)
+        if self.tanh_tau:
+            out = 2.0 * torch.tanh(out / self.tanh_tau)
+        return out, new_state
 
 
 def _onnx_gates_to_torch(w: np.ndarray, hidden: int) -> np.ndarray:

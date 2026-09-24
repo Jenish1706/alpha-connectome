@@ -84,6 +84,7 @@ validation row, ignoring the public mask.
 | T1.3 | 1.3 VWAP mid spread | Add mid(i0) − mid(i1), mid = mean of bid and ask VWAPs (1 input) | 0.653062 | 0.473547 | +0.000020 | 1.000 | 43.9 / 68.7 | Rejected: over the latency ceiling, no gain |
 | T2.1a | 2.1 Loss | Pure weighted Pearson loss (1 − WP per training window) instead of MSE | 0.626199 | 0.452891 | −0.026844 | 0.000 | 33.6 / 50.2 | Rejected: much worse |
 | T2.1b | 2.1 Loss | Hybrid loss: 0.8 × weighted Pearson + 0.2 × MSE | **0.667873** | 0.497689 | +0.014831 | 1.000 | 32.1 / 51.2 | **Accepted** |
+| T2.2a | 2.2 Tanh clamp | Output 2·tanh(z/τ) with τ = 2 (unit slope at 0) | **0.669708** | 0.498827 | +0.001835 | 1.000 | 31.5 / 55.7 | **Accepted** (just above the margin) |
 
 ## Notes
 
@@ -155,3 +156,12 @@ by 0.0148, nine times the noise margin, to 0.667873, past the 0.665 target.
 All-rows WP rose from 0.474 to 0.498, so the gain is not an artefact of the
 public mask. The holdout WP climbed to 0.433, against the control's 0.409, from
 the first evaluation onward. Latency is unchanged, since only the loss changed.
+
+**T2.2a.** Hypothesis: softly bounding outputs to the metric's [−2, 2] tames the
+rare large predictions, which the metric clips anyway, while keeping slope 1 near
+zero. WP rose by 0.0018, just above the 0.0016 margin. Three signals agree:
+all-rows WP +0.0011, holdout +0.0017, and the clamp alone lifted the untrained
+baseline's holdout from 0.392 to 0.402. The hybrid model's outputs have
+sd 0.40 and none reach ±2, so the gain comes from compressing the tails, not
+from clamping. The clamp adds three small ops; the rescaled latency moved from
+51.2 to 55.7 µs, partly from noise in the reference runs.

@@ -1,25 +1,26 @@
 {
-  "name": "T2.1b-hybrid-loss",
-  "description": "Test 2.1b. Train with a hybrid loss, 0.8 x weighted Pearson loss + 0.2 x MSE, instead of MSE.",
-  "wp": 0.6678729818343828,
-  "t0": 0.6628123138135988,
-  "t1": 0.6729336498551668,
-  "wp_all_rows": 0.4976894251668487,
-  "latency_us": 32.091094160401006,
-  "latency_scaled_us": 51.19975499356932,
-  "latency_ratio": 0.9481436109920245,
-  "latency_pinned_us": 30.96522488721805,
-  "reference_latency_us": 32.658791904761905,
-  "run_dir": "runs/20260924T111552-T2.1b-hybrid-loss",
+  "name": "T2.2a-tanh-tau2",
+  "description": "Test 2.2a. Clamp outputs softly into [-2, 2] as 2 tanh(z / tau) with temperature tau = 2 (unit slope at 0).",
+  "wp": 0.6697077901786419,
+  "t0": 0.6635819533847331,
+  "t1": 0.6758336269725508,
+  "wp_all_rows": 0.49882677352145044,
+  "latency_us": 31.511603734335843,
+  "latency_scaled_us": 55.66210093955195,
+  "latency_ratio": 1.0307796470287398,
+  "latency_pinned_us": 31.71066842105263,
+  "reference_latency_us": 30.76377042606516,
+  "run_dir": "runs/20260924T113908-T2.2a-tanh-tau2",
   "config": {
-    "name": "T2.1b-hybrid-loss",
-    "description": "Test 2.1b. Train with a hybrid loss, 0.8 x weighted Pearson loss + 0.2 x MSE, instead of MSE.",
+    "name": "T2.2a-tanh-tau2",
+    "description": "Test 2.2a. Clamp outputs softly into [-2, 2] as 2 tanh(z / tau) with temperature tau = 2 (unit slope at 0).",
     "seed": 0,
     "init": "baseline",
     "features": [],
     "model": {
       "hidden": 128,
-      "layers": 2
+      "layers": 2,
+      "tanh_tau": 2.0
     },
     "train": {
       "epochs": 1,
@@ -35,5 +36,5 @@
       "eval_every": 4
     }
   },
-  "finished": "2026-09-24T11:38:03+00:00"
+  "finished": "2026-09-24T12:01:48+00:00"
 }

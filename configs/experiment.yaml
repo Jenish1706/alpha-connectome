@@ -1,13 +1,14 @@
 # The candidate for scripts/run_experiment.py. Each iteration starts from the
 # champion's configuration (this file as committed) and changes one thing.
-name: T2.1b-hybrid-loss
-description: Test 2.1b. Train with a hybrid loss, 0.8 x weighted Pearson loss + 0.2 x MSE, instead of MSE.
+name: T2.2a-tanh-tau2
+description: Test 2.2a. Clamp outputs softly into [-2, 2] as 2 tanh(z / tau) with temperature tau = 2 (unit slope at 0).
 seed: 0
 init: baseline        # baseline = warm start from the starter pack ONNX; scratch = random init
 features: []          # names from src/features.py FEATURES, appended to the 112 raw inputs
 model:
   hidden: 128
   layers: 2
+  tanh_tau: 2.0      # output = 2 tanh(z / tanh_tau)
 train:
   epochs: 1           # passes over the fitting sequences; 0 scores the initial weights
   batch_sequences: 256
