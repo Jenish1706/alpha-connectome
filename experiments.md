@@ -87,6 +87,7 @@ validation row, ignoring the public mask.
 | T2.2a | 2.2 Tanh clamp | Output 2·tanh(z/τ) with τ = 2 (unit slope at 0) | **0.669708** | 0.498827 | +0.001835 | 1.000 | 31.5 / 55.7 | **Accepted** (just above the margin) |
 | T2.2b | 2.2 Tanh clamp | τ = 1 instead of 2 (slope 2 at 0, earlier saturation) | 0.665566 | 0.492818 | −0.004142 | 0.000 | 37.4 / 51.2 | Rejected: worse |
 | T2.2c | 2.2 Tanh clamp | τ = 4 instead of 2 (slope 0.5 at 0, nearly linear in range) | **0.673977** | 0.503062 | +0.004269 | 1.000 | 34.1 / 54.1 | **Accepted** |
+| T2.2d | 2.2 Tanh clamp | τ = 8 instead of 4 (extends the sweep past its edge) | **0.677236** | 0.505950 | +0.003259 | 1.000 | 36.2 / 53.4 | **Accepted** |
 
 ## Notes
 
@@ -182,3 +183,10 @@ metric clips them. After training, validation WP rose by 0.0043 over τ = 2 and
 all-rows WP by 0.0042. Over the sweep, WP rises monotonically with τ (1: 0.6656,
 2: 0.6697, 4: 0.6740), so the best value may lie beyond the grid; τ = 8 is
 tested next to find out.
+
+**T2.2d.** WP keeps rising with τ: +0.0033 from τ = 4 to 8, after +0.0043 from
+2 to 4. For large τ, 2·tanh(z/τ) is about 2z/τ over the model's range, so this
+is mainly a smaller output scale at the warm start rather than clamping. That
+starting scale seems to shape how the hybrid loss fine-tunes the network. The
+untrained holdout WP at τ = 8 was 0.433, and the trained holdout reached 0.445.
+τ = 16 is next, to find where the curve flattens.

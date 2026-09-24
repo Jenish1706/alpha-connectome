@@ -1,26 +1,26 @@
 {
-  "name": "T2.2c-tanh-tau4",
-  "description": "Test 2.2c. Tanh clamp temperature tau = 4 instead of 2 (slope 0.5 at 0, nearly linear in range).",
-  "wp": 0.6739771106927293,
-  "t0": 0.6685040090148887,
-  "t1": 0.6794502123705698,
-  "wp_all_rows": 0.5030622795295848,
-  "latency_us": 34.06820278195489,
-  "latency_scaled_us": 54.13314618504414,
-  "latency_ratio": 1.00246567009341,
-  "latency_pinned_us": 30.596650025062658,
-  "reference_latency_us": 30.521394335839602,
-  "run_dir": "runs/20260924T122540-T2.2c-tanh-tau4",
+  "name": "T2.2d-tanh-tau8",
+  "description": "Test 2.2d. Extend the temperature sweep past its edge, tau = 8 instead of 4.",
+  "wp": 0.6772363416970535,
+  "t0": 0.6721193430129762,
+  "t1": 0.6823533403811309,
+  "wp_all_rows": 0.5059499374660721,
+  "latency_us": 36.18311842105263,
+  "latency_scaled_us": 53.42545015378708,
+  "latency_ratio": 0.9893601880330941,
+  "latency_pinned_us": 31.861549548872183,
+  "reference_latency_us": 32.204196140350874,
+  "run_dir": "runs/20260924T124838-T2.2d-tanh-tau8",
   "config": {
-    "name": "T2.2c-tanh-tau4",
-    "description": "Test 2.2c. Tanh clamp temperature tau = 4 instead of 2 (slope 0.5 at 0, nearly linear in range).",
+    "name": "T2.2d-tanh-tau8",
+    "description": "Test 2.2d. Extend the temperature sweep past its edge, tau = 8 instead of 4.",
     "seed": 0,
     "init": "baseline",
     "features": [],
     "model": {
       "hidden": 128,
       "layers": 2,
-      "tanh_tau": 4.0
+      "tanh_tau": 8.0
     },
     "train": {
       "epochs": 1,
@@ -36,5 +36,5 @@
       "eval_every": 4
     }
   },
-  "finished": "2026-09-24T12:47:57+00:00"
+  "finished": "2026-09-24T13:11:53+00:00"
 }

@@ -1,14 +1,14 @@
 # The candidate for scripts/run_experiment.py. Each iteration starts from the
 # champion's configuration (this file as committed) and changes one thing.
-name: T2.2c-tanh-tau4
-description: Test 2.2c. Tanh clamp temperature tau = 4 instead of 2 (slope 0.5 at 0, nearly linear in range).
+name: T2.2d-tanh-tau8
+description: Test 2.2d. Extend the temperature sweep past its edge, tau = 8 instead of 4.
 seed: 0
 init: baseline        # baseline = warm start from the starter pack ONNX; scratch = random init
 features: []          # names from src/features.py FEATURES, appended to the 112 raw inputs
 model:
   hidden: 128
   layers: 2
-  tanh_tau: 4.0      # output = 2 tanh(z / tanh_tau)
+  tanh_tau: 8.0      # output = 2 tanh(z / tanh_tau)
 train:
   epochs: 1           # passes over the fitting sequences; 0 scores the initial weights
   batch_sequences: 256
