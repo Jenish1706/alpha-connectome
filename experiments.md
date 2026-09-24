@@ -89,6 +89,7 @@ validation row, ignoring the public mask.
 | T2.2c | 2.2 Tanh clamp | τ = 4 instead of 2 (slope 0.5 at 0, nearly linear in range) | **0.673977** | 0.503062 | +0.004269 | 1.000 | 34.1 / 54.1 | **Accepted** |
 | T2.2d | 2.2 Tanh clamp | τ = 8 instead of 4 (extends the sweep past its edge) | **0.677236** | 0.505950 | +0.003259 | 1.000 | 36.2 / 53.4 | **Accepted** |
 | T2.2e | 2.2 Tanh clamp | τ = 16 instead of 8 | 0.678451 | 0.506879 | +0.001215 | 1.000 | 35.1 / 53.4 | Rejected: inside the noise margin |
+| T3.1a | 3.1 Residual GRU | Residual block 2, hidden 128: + α·input, α learnable, 0 at init | 0.677236 | 0.505928 | −0.000000 | 0.471 | 38.5 / 56.9 | Rejected: no effect |
 
 ## Notes
 
@@ -208,3 +209,9 @@ flattens:
 
 For large τ the clamp mostly shrinks the warm start's output scale, so the
 gain is better read as "start the output small" than as clamping.
+
+**T3.1a.** The residual scale starts at zero so the warm start is exact, and
+training can open the skip path if it helps. It moved only to α = −0.018, and
+no weight drifted more than 0.0024 from the champion's. WP matched the
+champion to six decimals. So in one fine-tuning epoch, the model does not use
+a skip path around its second GRU. The two extra ops still cost latency.
