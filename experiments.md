@@ -79,6 +79,7 @@ validation row, ignoring the public mask.
 | T1.1a | 1.1 OFI | Add sum(dp·dv) for i0 and i1 | 0.653104 | 0.473613 | +0.000062 | 1.000 | 37.5 / 57.5 | Voided: see notes; rerun as T1.1 |
 | CAL1 | Calibration | E01 recipe, seed 1 | 0.653276 | 0.473229 | +0.000234 | 0.765 | 33.3 / 51.3 | Calibration only |
 | CAL2 | Calibration | E01 recipe, seed 2 | 0.651986 | 0.471799 | −0.001056 | 0.000 | 32.7 / 53.0 | Calibration only |
+| T1.1 | 1.1 OFI | Add sum(dp·dv) over the 4 trade slots, i0 and i1 (2 inputs) | 0.653113 | 0.473619 | +0.000071 | 1.000 | 33.9 / 55.2 | Rejected: below the 0.0016 margin |
 
 ## Notes
 
@@ -102,3 +103,11 @@ before it was committed, the judge was corrected, and 1.1 is rerun below.
 the fastest pinned runs are stable, so the rescaled check now uses fastest
 runs over nine pairs. The feature layer lost a redundant Concat and a global
 Clip, so each feature costs only its own ops.
+
+**T1.1.** Hypothesis: an explicit dp·dv product gives the GRU an order-flow
+signal it cannot form in one linear step. On this data it adds almost nothing.
+WP rose by 0.000071, consistent across validation sequences (P = 1.000) but a
+tenth of the seed noise, and all-rows WP moved by +0.00008. The holdout curve
+tracked the control to the fourth decimal. It cost about 1.5 µs pinned, so it
+was rejected and reverted. The trade columns are rank-transformed, so their
+product is not the financial dp·dv, which likely explains the null result.
