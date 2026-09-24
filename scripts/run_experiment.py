@@ -20,11 +20,16 @@ Protocol
      validation sequences. The 60 us ceiling was set when the starter pack
      solution measured 54 us on the host of the time; hosts differ in speed, so
      two checks apply. As measured: the median of three unpinned runs must be at
-     most 60 us. Rescaled to the 54 us host: nine alternating pairs of candidate
-     and starter pack runs, pinned to one core, give per-pair ratios, and
-     54 us times their median must be at most 60 us.
-  5. Accept when both latency checks pass, WP beats the champion, and a paired
-     bootstrap over validation sequences gives P(candidate > champion) >= 0.95.
+     most 60 us. Rescaled to the 54 us host: nine alternating runs each of the
+     candidate and the starter pack solution, pinned to one core; interference
+     only adds time, so 54 us times the ratio of their fastest runs must be at
+     most 60 us.
+  5. Accept when both latency checks pass, WP beats the champion by at least
+     MIN_DELTA, and a paired bootstrap over validation sequences gives
+     P(candidate > champion) >= 0.95. The bootstrap covers evaluation noise;
+     MIN_DELTA covers training noise, which the bootstrap cannot see: three
+     seeds of the E01 recipe gave WP sd 0.00069, so two single runs differ by
+     noise alone with sd 0.00097, and 1.645 of those is 0.0016.
      The first champion can only be the untrained starter pack baseline.
 """
 
@@ -69,6 +74,7 @@ REFERENCE_US = 54.0  # the starter pack solution on the host where the ceiling w
 LATENCY_LIMIT_US = 60.0
 LATENCY_PAIRS = 9
 CONFIDENCE = 0.95
+MIN_DELTA = 0.0016  # one-sided 95% bound on seed-to-seed noise between two single runs
 BOOTSTRAP = 2000
 CHECK_SEQUENCES = 4
 CHECK_TOLERANCE = 1e-4
@@ -173,11 +179,12 @@ def measure_latency(package: Path) -> dict:
         first, second = (candidate, REFERENCE_SOLUTION) if i % 2 == 0 else (REFERENCE_SOLUTION, candidate)
         a, b = _callback_mean(first, core), _callback_mean(second, core)
         pairs.append((a, b) if first == candidate else (b, a))
-    ratio = float(np.median([c / r for c, r in pairs]))
+    ratio = min(c for c, _ in pairs) / min(r for _, r in pairs)
     return {"latency_us": float(np.median(raw)), "latency_runs_us": raw, "latency_pairs_us": pairs,
             "latency_core": core, "latency_ratio": ratio, "latency_scaled_us": ratio * REFERENCE_US,
-            "latency_pinned_us": float(np.median([c for c, _ in pairs])),
-            "reference_latency_us": float(np.median([r for _, r in pairs]))}
+            "latency_median_ratio": float(np.median([c / r for c, r in pairs])),
+            "latency_pinned_us": min(c for c, _ in pairs),
+            "reference_latency_us": min(r for _, r in pairs)}
 
 
 def git(*args: str) -> str:
@@ -242,8 +249,9 @@ def run(config: dict, run_dir: Path) -> dict:
         raise RuntimeError("exported package does not reproduce the scored predictions")
 
     record.update(measure_latency(package))
-    log(f"latency {record['latency_us']:.2f} us unpinned; pinned {record['latency_pinned_us']:.2f} us vs "
-        f"starter pack {record['reference_latency_us']:.2f} us, ratio {record['latency_ratio']:.3f}, "
+    log(f"latency {record['latency_us']:.2f} us unpinned; fastest pinned "
+        f"{record['latency_pinned_us']:.2f} us vs starter pack {record['reference_latency_us']:.2f} us, "
+        f"ratio {record['latency_ratio']:.3f}, "
         f"so {record['latency_scaled_us']:.2f} us on the 54 us host")
     return record
 
@@ -265,8 +273,8 @@ def decide(record: dict, champion: dict | None, run_dir: Path) -> tuple[bool, st
                        + (f"; {summary}" if summary else ""))
     if champion is None:
         return True, "first champion: the untrained starter pack baseline"
-    if record["delta"] <= 0 or record["p_better"] < CONFIDENCE:
-        return False, f"not better than {champion['name']}: {summary}"
+    if record["delta"] < MIN_DELTA or record["p_better"] < CONFIDENCE:
+        return False, f"not better than {champion['name']} by {MIN_DELTA}: {summary}"
     return True, f"beats {champion['name']}: {summary}"
 
 
