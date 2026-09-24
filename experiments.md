@@ -66,6 +66,33 @@ to the current champion, then runs `python scripts/run_experiment.py`.
 Each candidate is trained once, with seed 0 like the champion, so the margin
 above stands in for repeated seeds.
 
+## Result
+
+The champion is **T2.2d: WP 0.677236** on the full validation set, up from
+the baseline's 0.617052 and past the 0.665 target. Latency is 36.2 µs as
+measured, or 53.4 µs rescaled to the 54 µs host. Its recipe:
+
+- warm start from the starter pack GRU;
+- one epoch of fine-tuning on 3,872 training sequences;
+- hybrid loss, 0.8 × weighted Pearson + 0.2 × MSE;
+- output 2·tanh(z/8).
+
+Two steps carry the gain:
+
+| Step | Gain |
+|---|---|
+| E01, fine-tuning | +0.036 |
+| T2.1b, hybrid loss | +0.015 |
+| T2.2a/c/d, tanh temperature | +0.009 |
+
+End-to-end check: the exported package (`runs/champion/package`), replayed
+row by row through the official scorer's `GlobalAccumulator` on all 37.46M
+validation rows, scores 0.6772363. That is the batched score to 1e-15.
+
+Caveats: every decision used the one public validation set and mask, so the
+final figure carries some selection bias. The hidden test set is the unbiased
+check. WP over all required rows rose alongside, from 0.440 to 0.506.
+
 ## Log
 
 Latency is shown as raw (unpinned median on this host) / rescaled (to the 54 µs
