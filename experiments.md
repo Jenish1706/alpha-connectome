@@ -86,6 +86,7 @@ validation row, ignoring the public mask.
 | T2.1b | 2.1 Loss | Hybrid loss: 0.8 × weighted Pearson + 0.2 × MSE | **0.667873** | 0.497689 | +0.014831 | 1.000 | 32.1 / 51.2 | **Accepted** |
 | T2.2a | 2.2 Tanh clamp | Output 2·tanh(z/τ) with τ = 2 (unit slope at 0) | **0.669708** | 0.498827 | +0.001835 | 1.000 | 31.5 / 55.7 | **Accepted** (just above the margin) |
 | T2.2b | 2.2 Tanh clamp | τ = 1 instead of 2 (slope 2 at 0, earlier saturation) | 0.665566 | 0.492818 | −0.004142 | 0.000 | 37.4 / 51.2 | Rejected: worse |
+| T2.2c | 2.2 Tanh clamp | τ = 4 instead of 2 (slope 0.5 at 0, nearly linear in range) | **0.673977** | 0.503062 | +0.004269 | 1.000 | 34.1 / 54.1 | **Accepted** |
 
 ## Notes
 
@@ -172,3 +173,12 @@ compresses much of the model's range (sd about 0.4). It also distorts the warm
 start: the untrained holdout WP fell to 0.369, against 0.402 at τ = 2. Training
 recovered only partly (holdout 0.4265 vs 0.4344), and validation WP dropped by
 0.0041.
+
+**T2.2c.** At τ = 4 the clamp is nearly linear across the model's range, with
+slope 0.5 at zero, so it mostly halves the warm start's output scale. The
+untrained holdout WP rose to 0.425, against 0.402 at τ = 2 and 0.392 with no
+clamp. So the baseline's raw outputs overshoot on these sequences and the
+metric clips them. After training, validation WP rose by 0.0043 over τ = 2 and
+all-rows WP by 0.0042. Over the sweep, WP rises monotonically with τ (1: 0.6656,
+2: 0.6697, 4: 0.6740), so the best value may lie beyond the grid; τ = 8 is
+tested next to find out.

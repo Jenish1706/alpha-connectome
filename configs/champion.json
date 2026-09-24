@@ -1,26 +1,26 @@
 {
-  "name": "T2.2a-tanh-tau2",
-  "description": "Test 2.2a. Clamp outputs softly into [-2, 2] as 2 tanh(z / tau) with temperature tau = 2 (unit slope at 0).",
-  "wp": 0.6697077901786419,
-  "t0": 0.6635819533847331,
-  "t1": 0.6758336269725508,
-  "wp_all_rows": 0.49882677352145044,
-  "latency_us": 31.511603734335843,
-  "latency_scaled_us": 55.66210093955195,
-  "latency_ratio": 1.0307796470287398,
-  "latency_pinned_us": 31.71066842105263,
-  "reference_latency_us": 30.76377042606516,
-  "run_dir": "runs/20260924T113908-T2.2a-tanh-tau2",
+  "name": "T2.2c-tanh-tau4",
+  "description": "Test 2.2c. Tanh clamp temperature tau = 4 instead of 2 (slope 0.5 at 0, nearly linear in range).",
+  "wp": 0.6739771106927293,
+  "t0": 0.6685040090148887,
+  "t1": 0.6794502123705698,
+  "wp_all_rows": 0.5030622795295848,
+  "latency_us": 34.06820278195489,
+  "latency_scaled_us": 54.13314618504414,
+  "latency_ratio": 1.00246567009341,
+  "latency_pinned_us": 30.596650025062658,
+  "reference_latency_us": 30.521394335839602,
+  "run_dir": "runs/20260924T122540-T2.2c-tanh-tau4",
   "config": {
-    "name": "T2.2a-tanh-tau2",
-    "description": "Test 2.2a. Clamp outputs softly into [-2, 2] as 2 tanh(z / tau) with temperature tau = 2 (unit slope at 0).",
+    "name": "T2.2c-tanh-tau4",
+    "description": "Test 2.2c. Tanh clamp temperature tau = 4 instead of 2 (slope 0.5 at 0, nearly linear in range).",
     "seed": 0,
     "init": "baseline",
     "features": [],
     "model": {
       "hidden": 128,
       "layers": 2,
-      "tanh_tau": 2.0
+      "tanh_tau": 4.0
     },
     "train": {
       "epochs": 1,
@@ -36,5 +36,5 @@
       "eval_every": 4
     }
   },
-  "finished": "2026-09-24T12:01:48+00:00"
+  "finished": "2026-09-24T12:47:57+00:00"
 }
