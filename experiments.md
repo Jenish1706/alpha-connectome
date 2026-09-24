@@ -92,6 +92,7 @@ validation row, ignoring the public mask.
 | T3.1a | 3.1 Residual GRU | Residual block 2, hidden 128: + α·input, α learnable, 0 at init | 0.677236 | 0.505928 | −0.000000 | 0.471 | 38.5 / 56.9 | Rejected: no effect |
 | T3.1b | 3.1 Residual GRU | Hidden 96, residual, warm start from the baseline's 96 most-used units | 0.676707 | 0.503906 | −0.000530 | 0.196 | 31.8 / 50.6 | Rejected: a tie, not a gain |
 | T3.1c | 3.1 Residual GRU | Hidden 64, residual, warm start from the baseline's 64 most-used units | 0.670673 | 0.494898 | −0.006564 | 0.000 | 28.9 / 43.5 | Rejected: worse |
+| T3.2 | 3.2 LayerNorm | LayerNorm on each gate's input and recurrent pre-activations, warm start | 0.672211 | 0.496028 | −0.005026 | 0.000 | 62.1 / 97.1 | Rejected: worse and over both latency limits |
 
 ## Notes
 
@@ -239,3 +240,13 @@ does not recover the capacity the pruning removed.
 
 The residual path is unused at 128. Dropping to 96 units is free in accuracy
 and saves about 3 µs rescaled, and 64 units costs 0.007 WP.
+
+**T3.2.** The cell normalizes each gate's W_i x and W_h h over its hidden units
+before the bias and activation. It keeps nn.GRU's parameters, so the baseline
+weights load, and it matches nn.GRU to 2e-7 with the norms off. Normalizing
+wrecks the warm start: the untrained holdout WP fell from 0.433 to 0.267, and
+one epoch recovered only to 0.419 (champion 0.445). Validation WP fell by
+0.0050. The unfused cell is also slow at batch 1. Each layer exports to about
+120 ONNX ops, against one fused GRU op, so latency was 62.1 µs even as
+measured, over the literal 60 µs rule. Training was 40% slower too
+(40k rows/s, against 73k).
