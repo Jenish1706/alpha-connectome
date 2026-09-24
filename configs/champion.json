@@ -1,0 +1,39 @@
+{
+  "name": "baseline",
+  "description": "Starter pack GRU baseline weights, unchanged (no training).",
+  "wp": 0.6170523820793217,
+  "t0": 0.5879126412765493,
+  "t1": 0.6461921228820939,
+  "wp_all_rows": 0.44015626193850704,
+  "latency_us": 30.011214511278197,
+  "latency_scaled_us": 51.93042150114381,
+  "latency_ratio": 0.961674472243404,
+  "latency_pinned_us": 30.904314260651628,
+  "reference_latency_us": 33.331338571428574,
+  "run_dir": "runs/20260924T080600-baseline",
+  "config": {
+    "name": "baseline",
+    "description": "Starter pack GRU baseline weights, unchanged (no training).",
+    "seed": 0,
+    "init": "baseline",
+    "features": [],
+    "model": {
+      "hidden": 128,
+      "layers": 2
+    },
+    "train": {
+      "epochs": 0,
+      "batch_sequences": 256,
+      "chunk": 250,
+      "lr": 0.0002,
+      "weight_decay": 0.0,
+      "grad_clip": 1.0,
+      "warmup_steps": 20,
+      "loss": "mse",
+      "fit_sequences": 3872,
+      "holdout": 128,
+      "eval_every": 4
+    }
+  },
+  "finished": "2026-09-24T08:10:31+00:00"
+}

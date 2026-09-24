@@ -61,5 +61,10 @@ trained once.
 
 ## Log
 
-| ID | Test | Change | WP | Δ vs champion | P(better) | Latency µs (pinned) | Outcome |
-|---|---|---|---|---|---|---|---|
+Latency is shown as raw (unpinned median on this host) / rescaled (to the 54 µs
+host); both must be at most 60 µs. "All rows" is WP over every required
+validation row, ignoring the public mask.
+
+| ID | Test | Change | WP | All rows | Δ vs champion | P(better) | Latency µs raw / rescaled | Outcome |
+|---|---|---|---|---|---|---|---|---|
+| E00 | Baseline | Starter pack GRU weights, untrained | 0.617052 | 0.440156 | — | — | 30.0 / 51.9 | Accepted: first champion |
