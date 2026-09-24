@@ -3,7 +3,9 @@
 Training and serving run the same torch code, since the feature ops are part of
 model.onnx; the solution only feeds raw rows. Each feature is an ``nn.Module``
 registered by name in ``FEATURES``, with a ``width`` attribute giving how many
-columns it appends to the 112 raw inputs.
+columns it appends to the 112 raw inputs. Every graph op costs callback time,
+so features must be bounded by construction rather than clamped afterwards
+(raw inputs are themselves bounded by +-5.2).
 
 Raw inputs are per-column rank-Gaussian transforms of the original book and
 trade data (values near N(0, 1), saturating at +-5.199), so volume-like
@@ -23,7 +25,6 @@ INSTRUMENTS = (0, 52)
 P_BID, P_ASK = range(0, 11), range(11, 22)
 V_BID, V_ASK = range(22, 33), range(33, 44)
 DP, DV = range(44, 48), range(48, 52)
-CLAMP = 10.0  # engineered features are clamped so no input row can blow up the recurrence
 
 FEATURES: dict[str, type[nn.Module]] = {}
 
@@ -52,5 +53,4 @@ class FeatureLayer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.names:
             return x
-        extra = torch.cat([block(x) for block in self.blocks], dim=-1).clamp(-CLAMP, CLAMP)
-        return torch.cat([x, extra], dim=-1)
+        return torch.cat([x, *(block(x) for block in self.blocks)], dim=-1)

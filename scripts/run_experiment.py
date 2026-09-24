@@ -20,7 +20,7 @@ Protocol
      validation sequences. The 60 us ceiling was set when the starter pack
      solution measured 54 us on the host of the time; hosts differ in speed, so
      two checks apply. As measured: the median of three unpinned runs must be at
-     most 60 us. Rescaled to the 54 us host: five alternating pairs of candidate
+     most 60 us. Rescaled to the 54 us host: nine alternating pairs of candidate
      and starter pack runs, pinned to one core, give per-pair ratios, and
      54 us times their median must be at most 60 us.
   5. Accept when both latency checks pass, WP beats the champion, and a paired
@@ -67,6 +67,7 @@ BENCHMARK = ROOT / "scripts" / "benchmark_latency.py"
 REFERENCE_SOLUTION = ROOT / "wnn_connectome_starterpack" / "baseline" / "solution.py"
 REFERENCE_US = 54.0  # the starter pack solution on the host where the ceiling was set
 LATENCY_LIMIT_US = 60.0
+LATENCY_PAIRS = 9
 CONFIDENCE = 0.95
 BOOTSTRAP = 2000
 CHECK_SEQUENCES = 4
@@ -168,7 +169,7 @@ def measure_latency(package: Path) -> dict:
     except (subprocess.CalledProcessError, FileNotFoundError):
         core = None  # pinning unavailable: pair unpinned runs instead
     pairs = []
-    for i in range(5):  # alternate the order so drift within a pair cancels
+    for i in range(LATENCY_PAIRS):  # alternate the order so drift within a pair cancels
         first, second = (candidate, REFERENCE_SOLUTION) if i % 2 == 0 else (REFERENCE_SOLUTION, candidate)
         a, b = _callback_mean(first, core), _callback_mean(second, core)
         pairs.append((a, b) if first == candidate else (b, a))
@@ -313,6 +314,8 @@ def install_champion(record: dict, run_dir: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", type=Path, default=ROOT / "configs" / "experiment.yaml")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="run and compare with the champion, but never accept (noise calibration)")
     args = ap.parse_args(argv)
     RUNS.mkdir(exist_ok=True)
     with open(RUNS / ".lock", "w") as lock:
@@ -321,10 +324,10 @@ def main(argv: list[str] | None = None) -> int:
         except BlockingIOError:
             log("another run_experiment.py is running")
             return 2
-        return _main(args.config)
+        return _main(args.config, args.calibrate)
 
 
-def _main(config_path: Path) -> int:
+def _main(config_path: Path, calibrate: bool = False) -> int:
     config = yaml.safe_load(config_path.read_text())
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     run_dir = RUNS / f"{stamp}-{config['name']}"
@@ -339,12 +342,15 @@ def _main(config_path: Path) -> int:
                                "(init: baseline, features: [], hidden 128, layers 2, epochs: 0)")
         record.update(run(config, run_dir))
         accepted, reason = decide(record, champion, run_dir)
+        if calibrate:
+            accepted, reason = False, f"calibration run, never accepted ({reason})"
         status = 0 if accepted else 1
     except Exception as exc:  # a failed run is logged and reported, never accepted
         record["error"] = "".join(traceback.format_exception(exc))
         accepted, reason, status = False, f"failed: {exc}", 2
         log(record["error"])
-    record.update(decision=["ACCEPTED", "REJECTED", "FAILED"][status], reason=reason,
+    record.update(decision="CALIBRATION" if calibrate and status == 1 else
+                  ["ACCEPTED", "REJECTED", "FAILED"][status], reason=reason,
                   finished=datetime.now(timezone.utc).isoformat(timespec="seconds"))
     try:
         (run_dir / "result.json").write_text(json.dumps(record, indent=2, default=float))
