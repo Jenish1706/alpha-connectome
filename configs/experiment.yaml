@@ -1,0 +1,22 @@
+# The candidate for scripts/run_experiment.py. Each iteration starts from the
+# champion's configuration (this file as committed) and changes one thing.
+name: baseline
+description: Starter pack GRU baseline weights, unchanged (no training).
+seed: 0
+init: baseline        # baseline = warm start from the starter pack ONNX; scratch = random init
+features: []          # names from src/features.py FEATURES, appended to the 112 raw inputs
+model:
+  hidden: 128
+  layers: 2
+train:
+  epochs: 0           # passes over the fitting sequences; 0 scores the initial weights
+  batch_sequences: 256
+  chunk: 250          # truncated-BPTT window
+  lr: 2.0e-4
+  weight_decay: 0.0
+  grad_clip: 1.0
+  warmup_steps: 20
+  loss: mse
+  fit_sequences: 3872 # sample row groups 0..3871 are fitted
+  holdout: 128        # row groups 3872..3999: a diagnostic, never used for selection
+  eval_every: 4       # holdout evaluations every N sequence batches

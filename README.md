@@ -13,14 +13,14 @@ curl -fL https://files.wundernn.io/wnn_connectome_starterpack.tar.gz \
 
 This writes the Parquet files to `datasets/` and the rest of the pack (docs, `METRIC.md`, the reference scorer `utils.py`, `baseline/`) to `wnn_connectome_starterpack/`. Both paths are gitignored. A plain `tar -xz -C .` of the same stream puts the files under `wnn_connectome_starterpack/datasets/` instead, where the tests do not look.
 
-The archive is about 34 GB, and `datasets/train.parquet` alone is 29.2 GB. On a smaller disk, such as a Claude Code cloud session, keep a training sample instead:
+The archive is about 34 GB, and `datasets/train.parquet` alone is 29.2 GB. On a smaller disk, such as a Claude Code cloud session, keep a training sample instead. The experiment harness fits on the first 3,872 sequences and needs at least 4,000, about 11 GB:
 
 ```bash
 curl -fL https://files.wundernn.io/wnn_connectome_starterpack.tar.gz \
-  | python scripts/fetch_starterpack.py --train-sample 512
+  | python scripts/fetch_starterpack.py --train-sample 4000 --skip-existing
 ```
 
-This keeps the first 512 training sequences as `datasets/train_head.parquet`, plus the complete training footer as `datasets/train.parquet.footer`. The footer is enough to validate the layout of all 10,607 training sequences.
+This keeps the first 4,000 training sequences as `datasets/train_head.parquet`, byte-identical to the original file under a rewritten footer, plus the complete training footer as `datasets/train.parquet.footer`. The footer is enough to validate the layout of all 10,607 training sequences. `--skip-existing` keeps files already on disk. If the stream is cut after the sample's bytes arrived and a footer is on disk, the sample is still finished.
 
 ## Code map
 
@@ -28,6 +28,8 @@ This keeps the first 512 training sequences as `datasets/train_head.parquet`, pl
 - `src/utils/metric.py`: Global Weighted Pearson, matching the starter pack scorer, plus a mergeable streaming accumulator.
 - `src/data/streamer.py`: PyTorch TBPTT chunk streamer over row groups, sharded across `DataLoader` workers.
 - `scripts/benchmark_latency.py`: replays rows through a `solution.py`, enforces the callback contract, times it against the 60-minute budget, and optionally scores it.
+- `scripts/run_experiment.py`: the research loop's judge. It trains the candidate in `configs/experiment.yaml`, scores it on the full validation set, exports a submission package, checks parity and latency, and accepts it only if it beats `configs/champion.json`. `experiments.md` records the protocol and every attempt.
+- `src/models/`, `src/training/`, `src/export.py`: the GRU model with in-graph features, truncated-BPTT training, and ONNX export.
 
 ## Development
 
