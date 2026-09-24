@@ -82,6 +82,7 @@ validation row, ignoring the public mask.
 | T1.1 | 1.1 OFI | Add sum(dp·dv) over the 4 trade slots, i0 and i1 (2 inputs) | 0.653113 | 0.473619 | +0.000071 | 1.000 | 33.9 / 55.2 | Rejected: below the 0.0016 margin |
 | T1.2 | 1.2 Volume imbalance | Add (Σ bid v − Σ ask v) / (\|Σ bid\| + \|Σ ask\|), i0 and i1 (2 inputs) | 0.653030 | 0.473479 | −0.000012 | 0.089 | 38.2 / 59.9 | Rejected: no gain, at the latency ceiling |
 | T1.3 | 1.3 VWAP mid spread | Add mid(i0) − mid(i1), mid = mean of bid and ask VWAPs (1 input) | 0.653062 | 0.473547 | +0.000020 | 1.000 | 43.9 / 68.7 | Rejected: over the latency ceiling, no gain |
+| T2.1a | 2.1 Loss | Pure weighted Pearson loss (1 − WP per training window) instead of MSE | 0.626199 | 0.452891 | −0.026844 | 0.000 | 33.6 / 50.2 | Rejected: much worse |
 
 ## Notes
 
@@ -138,3 +139,11 @@ were +0.00007, −0.00001 and +0.00002, against a 0.0016 noise margin. The
 anonymising rank transforms remove the price and volume arithmetic these
 features rely on, and the GRU already sees every raw column. Each feature also
 costs 1.5-9.5 µs per call, out of about 11 µs of rescaled headroom.
+
+**T2.1a.** Hypothesis: optimizing the metric directly beats MSE. The holdout
+WP matched the control (0.4094 vs 0.4092), but validation WP fell by 0.027.
+The loss ignores the level and scale of the outputs within each window, so
+both drifted. On six validation sequences the predictions had sd 1.74 (MSE
+model: 0.33), a mean near +1.3, and 30% of rows beyond ±2, where the metric
+clips them. The ranking was fine; the calibration was lost. This is the
+failure the hybrid's MSE term and the 2.2 tanh clamp are meant to contain.
