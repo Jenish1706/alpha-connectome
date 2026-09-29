@@ -49,6 +49,30 @@ class RecurrentRegressor(nn.Module):
             out = 2.0 * torch.tanh(out / self.tanh_tau)
         return out, new_state
 
+    def step(self, x: torch.Tensor, state: list[torch.Tensor]):
+        """``forward`` for one row, x (1, 1, 112), written for a lean exported graph.
+
+        For a single step a GRU's final state is its output, so each GRU op's
+        state output feeds the next layer directly. Nothing is transposed for
+        batch_first or squeezed off the op's direction axis, and the head
+        absorbs 1/tanh_tau. This leaves the two GRU ops and four head ops.
+        """
+        x = self.features(x)  # (1, 1, width): the same as (time, batch, features)
+        new_state = []
+        for block, h in zip(self.blocks, state, strict=True):
+            gru = block["gru"]
+            _, h = torch._VF.gru(x, h, gru._flat_weights, gru.bias, gru.num_layers, 0.0, False,
+                                 gru.bidirectional, False)
+            new_state.append(h)
+            x = h
+        weight, bias = self.reg_head.weight, self.reg_head.bias
+        if self.tanh_tau:
+            weight, bias = weight / self.tanh_tau, bias / self.tanh_tau
+        out = nn.functional.linear(x, weight, bias)
+        if self.tanh_tau:
+            out = 2.0 * torch.tanh(out)
+        return out, new_state
+
 
 def _onnx_gates_to_torch(w: np.ndarray, hidden: int) -> np.ndarray:
     """ONNX stacks GRU gates as (z, r, h); PyTorch as (r, z, n)."""

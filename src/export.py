@@ -24,14 +24,36 @@ from torch import nn
 SRC = Path(__file__).resolve().parent
 
 
+def _one_row(model):
+    """The model's one-row ``step`` if it has one next to its ``forward``, else the model itself.
+
+    A subclass that overrides ``forward`` alone must not inherit a ``step``
+    written for another ``forward``.
+    """
+    owner = next(c for c in type(model).__mro__ if "forward" in vars(c))
+    return model.step if "step" in vars(owner) else model
+
+
 class _Step(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
 
     def forward(self, features, *state):
-        prediction, new_state = self.model(features, list(state))
+        prediction, new_state = _one_row(self.model)(features, list(state))
         return (prediction, *new_state)
+
+
+@torch.no_grad()
+def _check_one_row(model, rows: int = 20) -> None:
+    """The traced one-row path must compute ``forward``, row by row."""
+    x = torch.randn(1, rows, model.input_dim, generator=torch.Generator().manual_seed(0)).clamp(-5.2, 5.2)
+    expected, _ = model(x, model.initial_state(1))
+    step, state = _one_row(model), model.initial_state(1)
+    for t in range(rows):
+        got, state = step(x[:, t:t + 1], state)
+        if not torch.allclose(got[0, 0], expected[0, t], rtol=0, atol=1e-5):
+            raise RuntimeError(f"one-row step disagrees with forward at row {t}")
 
 
 def export_package(model, directory: Path) -> Path:
@@ -40,6 +62,7 @@ def export_package(model, directory: Path) -> Path:
     state = model.initial_state(1)
     if any(s.dtype != torch.float32 for s in state):
         raise TypeError("recurrent state must be float32 tensors")
+    _check_one_row(model)
     names = [f"hidden_{i}" for i in range(len(state))]
     example = torch.zeros(1, 1, model.input_dim)
     with torch.no_grad(), warnings.catch_warnings(record=True) as caught:

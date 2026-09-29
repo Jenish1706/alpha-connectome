@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 import pytest
 import torch
@@ -54,11 +55,14 @@ def test_moment_statistics_reproduce_global_wp():
     assert run.paired_bootstrap(better, stats)[0] > 0.99
 
 
-def test_exported_package_matches_torch(tmp_path):
+@pytest.mark.parametrize("options", [{}, {"tanh_tau": 8.0}])
+def test_exported_package_matches_torch(tmp_path, options):
     bench = _script("benchmark_latency")
     torch.manual_seed(0)
-    model = RecurrentRegressor(hidden=16).eval()
+    model = RecurrentRegressor(hidden=16, **options).eval()
     package = export_package(model, tmp_path / "package")
+    ops = {n.op_type for n in onnx.load(str(package / "model.onnx")).graph.node} - {"Constant"}
+    assert not ops & {"Transpose", "Squeeze", "Div"}  # the lean one-row graph
     solution = bench.load_solution(package / "solution.py")
     x = np.random.default_rng(2).standard_normal((300, N_RAW)).astype(np.float32)
     with torch.no_grad():
@@ -66,6 +70,19 @@ def test_exported_package_matches_torch(tmp_path):
     got = [solution.predict(DataPoint(5, i, i >= WARMUP, x[i])) for i in range(300)]
     assert all(g is None for g in got[:WARMUP])
     assert np.abs(np.stack(got[WARMUP:]) - expected[0, WARMUP:].numpy()).max() < 1e-5
+
+
+def test_export_checks_the_one_row_path(tmp_path):
+    class Broken(RecurrentRegressor):
+        def forward(self, x, state):
+            return super().forward(x, state)
+
+        def step(self, x, state):
+            out, state = super().step(x, state)
+            return out + 1e-3, state
+
+    with pytest.raises(RuntimeError, match="disagrees with forward"):
+        export_package(Broken(hidden=8), tmp_path / "package")
 
 
 def test_baseline_weights_port_exactly(valid_path, baseline_solution):
