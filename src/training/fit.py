@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import math
+import resource
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,7 +202,9 @@ def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
                                     e.lerp_(p, 1 - config.ema_decay)
                 del batch  # free the arrays before the prefetched batch is handed over
                 rate = step * config.chunk * size / (time.time() - started)
-                log(f"  batch {done}/{total_batches} loss {loss.item():.4f} ({rate / 1e3:.0f}k rows/s)")
+                peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6  # kB on Linux
+                log(f"  batch {done}/{total_batches} loss {loss.item():.4f} ({rate / 1e3:.0f}k rows/s, "
+                    f"peak RSS {peak:.1f} GB)")
                 if done % config.eval_every == 0 or done == total_batches:
                     evaluate(step, done, loss.item())
         finally:

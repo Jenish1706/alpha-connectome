@@ -8,7 +8,6 @@ next batch is read on a background thread while the current one is used.
 from __future__ import annotations
 
 import threading
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -16,7 +15,6 @@ from typing import Iterator, Sequence
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import torch
 
 from src.data.schema import FEATURE_COLUMNS, SEQUENCE_LENGTH, TARGET_COLUMNS, WARMUP, SchemaError
 
@@ -39,44 +37,47 @@ def columns_for(parquet: pq.ParquetFile) -> list[str]:
 
 
 def read_batch(parquet: pq.ParquetFile, groups: Sequence[int], remote=None) -> Batch:
-    """Read whole sequences; groups at or past the local file's end come from ``remote``."""
+    """Read whole sequences; groups at or past the local file's end come from ``remote``.
+
+    Each row group is decoded straight into its slot of preallocated batch
+    arrays, so reading peaks near the batch's own size rather than a multiple.
+    Rows follow ``groups``.
+    """
     columns = columns_for(parquet)
-    local = [g for g in groups if g < parquet.metadata.num_row_groups]
-    far = [g for g in groups if g >= parquet.metadata.num_row_groups]
+    local = parquet.metadata.num_row_groups
+    far = [g for g in groups if g >= local]
     if far and remote is None:
         raise SchemaError(f"row groups {far[:3]}... are not in the local file")
-    tables = [parquet.read_row_groups(local, columns=columns)] if local else []
-    tables += [remote.get(g, columns=columns) for g in far]
-    table = tables[0] if len(tables) == 1 else pa.concat_tables(tables)
-    return table_to_batch(table, local + far)
-
-
-def table_to_batch(table: pa.Table, groups: Sequence[int]) -> Batch:
-    """Dense arrays for whole sequences stored back to back in ``table``, one per group."""
-    scored = "is_scored" in table.column_names
     n = len(groups)
-    if table.num_rows != n * SEQUENCE_LENGTH:
-        raise SchemaError(f"expected {n} whole sequences, got {table.num_rows} rows")
-    ids = table["seq_ix"].to_numpy().reshape(n, SEQUENCE_LENGTH)
-    steps = table["step_in_seq"].to_numpy().reshape(n, SEQUENCE_LENGTH)
-    need = table["need_prediction"].to_numpy(zero_copy_only=False).reshape(n, SEQUENCE_LENGTH)
-    if (ids != ids[:, :1]).any() or (steps != np.arange(SEQUENCE_LENGTH)).any() or (need != NEED).any():
+    x = np.empty((n, SEQUENCE_LENGTH, len(FEATURE_COLUMNS)), np.float32)
+    y = np.empty((n, SEQUENCE_LENGTH, len(TARGET_COLUMNS)), np.float32)
+    scored = np.empty((n, SEQUENCE_LENGTH), bool) if "is_scored" in columns else None
+    ids = np.empty(n, np.int64)
+    for i, group in enumerate(groups):
+        table = parquet.read_row_group(group, columns=columns) if group < local \
+            else remote.get(group, columns=columns)
+        ids[i] = _fill(table, x[i], y[i], None if scored is None else scored[i])
+    return Batch(list(groups), ids, x, y, scored)
+
+
+def _fill(table: pa.Table, x: np.ndarray, y: np.ndarray, scored: np.ndarray | None) -> int:
+    """Copy one sequence's row group into its slots of the batch arrays; return its seq_ix."""
+    if table.num_rows != SEQUENCE_LENGTH:
+        raise SchemaError(f"expected a whole sequence, got {table.num_rows} rows")
+    ids = table["seq_ix"].to_numpy()
+    steps = table["step_in_seq"].to_numpy()
+    need = table["need_prediction"].to_numpy(zero_copy_only=False)
+    if (ids != ids[0]).any() or (steps != np.arange(SEQUENCE_LENGTH)).any() or (need != NEED).any():
         raise SchemaError("row groups break the one-sequence-per-group contract")
-    cols = [table[c].to_numpy() for c in FEATURE_COLUMNS]
-    # Check column by column: one column's temporaries, not a full-batch copy.
-    if not all(np.isfinite(c).all() for c in cols):
+    np.stack([table[c].to_numpy() for c in FEATURE_COLUMNS], axis=1, out=x)
+    np.stack([table[c].to_numpy() for c in TARGET_COLUMNS], axis=1, out=y)
+    if not np.isfinite(x).all():
         raise SchemaError("nonfinite features")
-    with warnings.catch_warnings():  # Arrow buffers are read-only; they are only read here
-        warnings.simplefilter("ignore", UserWarning)
-        # torch.stack interleaves the columns in parallel, several times faster than numpy.
-        x = torch.stack([torch.from_numpy(c) for c in cols], dim=1).numpy()
-    y = np.stack([table[t].to_numpy() for t in TARGET_COLUMNS], axis=-1).astype(np.float32)
-    mask = table["is_scored"].to_numpy(zero_copy_only=False).reshape(n, SEQUENCE_LENGTH) if scored else None
-    del cols, table  # release the Arrow buffers before the next batch is read
     if not np.isfinite(y).all():
         raise SchemaError("nonfinite targets")
-    return Batch(list(groups), ids[:, 0].copy(), x.reshape(n, SEQUENCE_LENGTH, -1),
-                 y.reshape(n, SEQUENCE_LENGTH, 2), mask)  # rows follow ``groups``
+    if scored is not None:
+        scored[:] = table["is_scored"].to_numpy(zero_copy_only=False)
+    return int(ids[0])
 
 
 def iter_batches(path: str | Path, batches: Sequence[Sequence[int]], remote=None) -> Iterator[Batch]:

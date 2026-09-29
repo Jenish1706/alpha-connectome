@@ -121,6 +121,7 @@ validation row, ignoring the public mask.
 | T3.1c | 3.1 Residual GRU | Hidden 64, residual, warm start from the baseline's 64 most-used units | 0.670673 | 0.494898 | −0.006564 | 0.000 | 28.9 / 43.5 | Rejected: worse |
 | T3.2 | 3.2 LayerNorm | LayerNorm on each gate's input and recurrent pre-activations, warm start | 0.672211 | 0.496028 | −0.005026 | 0.000 | 62.1 / 97.1 | Rejected: worse and over both latency limits |
 | T3.3 | 3.3 LRU | 2 diagonal LRU layers (width 128, complex state 128), from scratch, lr 1e-3 | 0.648288 | 0.465312 | −0.028948 | 0.000 | 61.2 / 92.3 | Rejected: worse and over both latency limits |
+| A1a | A1 Full data | All 10,479 training sequences (6,607 streamed from the archive), 2 epochs, cosine 2e-4 → 1e-5 | — | — | — | — | — | Failed: out of memory at batch 4 of 80; loader fixed, rerun as A1 |
 
 ## Notes
 
@@ -294,3 +295,12 @@ latency limits. The residual path went unused. Narrowing to 96 units ties at
 lower latency, and 64 units costs 0.007. The LayerNorm cell and the LRU are
 both too slow at batch 1 as unfused ONNX graphs. The LRU is the one worth
 revisiting with a longer from-scratch schedule and a fused or folded export.
+
+**A1a.** The first full-data run was killed by the out-of-memory killer at
+13.9 GB, as its first streamed batch was decoded. The loader built each batch
+of 256 sequences through two full-size intermediate copies: the Arrow table,
+then per-column NumPy arrays concatenated across row groups. It peaked at
+about 3.3× the 2.3 GB batch, and two batches are in flight while training
+overlaps loading. It now decodes one row group at a time straight into
+preallocated batch arrays. On 128 sequences that peaks at 1.64 GB instead of
+3.76 GB, and runs in 2.8 s instead of 4.3-5.8 s. It produces identical arrays.

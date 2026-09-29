@@ -93,9 +93,9 @@ def test_batches_mix_local_and_remote_sequences(tmp_path, write_dataset):
         mixed = read_batch(pq.ParquetFile(head), [3, 1, 2], remote)
     finally:
         remote.close()
-    expected = read_batch(pq.ParquetFile(full), [1, 3, 2])  # local groups first, in the given order
-    assert mixed.groups == expected.groups == [1, 3, 2]
-    assert mixed.seq_ix.tolist() == [1, 2, 4]
+    expected = read_batch(pq.ParquetFile(full), [3, 1, 2])
+    assert mixed.groups == expected.groups == [3, 1, 2]
+    assert mixed.seq_ix.tolist() == [2, 1, 4]
     np.testing.assert_array_equal(mixed.features, expected.features)
     np.testing.assert_array_equal(mixed.targets, expected.targets)
     with pytest.raises(SchemaError, match="not in the local file"):
