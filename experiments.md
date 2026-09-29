@@ -60,6 +60,13 @@ phase aims at 0.685 along four axes (A1-A4), planned in `research_notes.md`.
   called seed 1 better than seed 2 with P = 1.000.
 - **First champion.** Only the untrained starter pack baseline can become the
   first champion. Every later candidate is judged against the champion.
+- **Screens.** From A1 on, a full-data run takes about 2.5 hours. Cheap
+  hypotheses are first screened on the short recipe of T2.2d (one epoch on the
+  local sample, about 25 minutes), changed in one thing. Screens run with
+  `--calibrate`, so they are never accepted, and
+  `scripts/compare_runs.py` compares them with T2.2d under the same margin and
+  bootstrap. Only a screen that clears the margin is rerun on the champion's
+  recipe, as a real candidate.
 - **Git.** On acceptance: this log entry is written first, then
   `git commit -am "feat: <change> (WP: <score>, <us> us)"`. On rejection or
   failure: `git checkout -- . && git clean -fd`, then this log entry is written
@@ -132,6 +139,9 @@ validation row, ignoring the public mask.
 | A1a | A1 Full data | All 10,479 training sequences (6,607 streamed from the archive), 2 epochs, cosine 2e-4 → 1e-5 | — | — | — | — | — | Failed: out of memory at batch 4 of 80; loader fixed, rerun as A1 |
 | A1 | A1 Full data | Same as A1a, with the fixed loader | **0.680247** | 0.508755 | +0.003011 | 1.000 | 42.5 / 52.6 | **Accepted** |
 | A3a | A3 Weight averaging | Polyak EMA (decay 0.999) of the weights over the last 30% of steps, returned instead of the final weights | 0.680174 | 0.508703 | −0.000073 | 0.121 | 30.3 / 50.6 | Rejected: no effect |
+| S3b-0.85 | A3b Loss ratio, screen | Hybrid α = 0.85 instead of 0.8, on the T2.2d recipe | 0.677458 | 0.506345 | +0.000222 vs T2.2d | 1.000 | 33.3 / 53.8 | Screen: below the margin |
+| S3b-0.90 | A3b Loss ratio, screen | α = 0.90 | 0.677836 | 0.506892 | +0.000599 vs T2.2d | 1.000 | 31.7 / 54.2 | Screen: below the margin |
+| S3b-0.95 | A3b Loss ratio, screen | α = 0.95 | 0.678312 | 0.507432 | +0.001075 vs T2.2d | 1.000 | 32.2 / 51.5 | Screen: below the margin, still rising |
 
 ## Notes
 
@@ -347,3 +357,18 @@ ops instead of 12. Its latency ratio to the starter pack was 0.936, against
 0.973 for A1's package of the same architecture. The container had moved
 again, to a faster host: the starter pack measured 30.4 µs pinned, against
 35.2 µs in the A1 run.
+
+**S3b (α sweep, screens).** Hypothesis: with the tanh clamp now bounding the
+outputs, more weight on the metric-aligned Pearson term can be tolerated.
+The MSE term was there to anchor level and scale (T2.1a). On the T2.2d recipe:
+
+| α | 0.80 (T2.2d) | 0.85 | 0.90 | 0.95 |
+|---|---|---|---|---|
+| WP | 0.677236 | 0.677458 | 0.677836 | 0.678312 |
+| All rows | 0.505950 | 0.506345 | 0.506892 | 0.507432 |
+| Holdout | 0.44466 | 0.44522 | 0.44607 | 0.44692 |
+
+Validation WP, all-rows WP and the holdout all rise with α, and the steps grow.
+No single step clears the 0.0016 margin, though; the largest is +0.0011 at
+0.95. The curve has not peaked at the edge of the requested range, so the
+sweep continues past it, as the τ sweep did.
