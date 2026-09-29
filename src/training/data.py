@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
@@ -31,11 +32,28 @@ class Batch:
     is_scored: np.ndarray | None  # (B, 20000) bool, validation files only
 
 
-def read_batch(parquet: pq.ParquetFile, groups: Sequence[int]) -> Batch:
-    names = set(parquet.schema_arrow.names)
-    scored = "is_scored" in names
-    columns = ["seq_ix", "step_in_seq", "need_prediction", *FEATURE_COLUMNS, *TARGET_COLUMNS]
-    table = parquet.read_row_groups(list(groups), columns=columns + (["is_scored"] if scored else []))
+def columns_for(parquet: pq.ParquetFile) -> list[str]:
+    scored = "is_scored" in parquet.schema_arrow.names
+    return ["seq_ix", "step_in_seq", "need_prediction", *FEATURE_COLUMNS, *TARGET_COLUMNS] + \
+        (["is_scored"] if scored else [])
+
+
+def read_batch(parquet: pq.ParquetFile, groups: Sequence[int], remote=None) -> Batch:
+    """Read whole sequences; groups at or past the local file's end come from ``remote``."""
+    columns = columns_for(parquet)
+    local = [g for g in groups if g < parquet.metadata.num_row_groups]
+    far = [g for g in groups if g >= parquet.metadata.num_row_groups]
+    if far and remote is None:
+        raise SchemaError(f"row groups {far[:3]}... are not in the local file")
+    tables = [parquet.read_row_groups(local, columns=columns)] if local else []
+    tables += [remote.get(g, columns=columns) for g in far]
+    table = tables[0] if len(tables) == 1 else pa.concat_tables(tables)
+    return table_to_batch(table, local + far)
+
+
+def table_to_batch(table: pa.Table, groups: Sequence[int]) -> Batch:
+    """Dense arrays for whole sequences stored back to back in ``table``, one per group."""
+    scored = "is_scored" in table.column_names
     n = len(groups)
     if table.num_rows != n * SEQUENCE_LENGTH:
         raise SchemaError(f"expected {n} whole sequences, got {table.num_rows} rows")
@@ -58,17 +76,17 @@ def read_batch(parquet: pq.ParquetFile, groups: Sequence[int]) -> Batch:
     if not np.isfinite(y).all():
         raise SchemaError("nonfinite targets")
     return Batch(list(groups), ids[:, 0].copy(), x.reshape(n, SEQUENCE_LENGTH, -1),
-                 y.reshape(n, SEQUENCE_LENGTH, 2), mask)
+                 y.reshape(n, SEQUENCE_LENGTH, 2), mask)  # rows follow ``groups``
 
 
-def iter_batches(path: str | Path, batches: Sequence[Sequence[int]]) -> Iterator[Batch]:
+def iter_batches(path: str | Path, batches: Sequence[Sequence[int]], remote=None) -> Iterator[Batch]:
     """Yield batches in order, reading the next one while the caller works."""
     parquet = pq.ParquetFile(path)
     result: dict = {}
 
     def load(i: int) -> None:
         try:
-            result[i] = read_batch(parquet, batches[i])
+            result[i] = read_batch(parquet, batches[i], remote)
         except BaseException as exc:  # re-raised in the caller's thread
             result[i] = exc
 

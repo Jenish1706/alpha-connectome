@@ -20,6 +20,7 @@ import torch
 
 from src.training.data import NEED, iter_batches
 from src.training.losses import LOSSES
+from src.training.remote import URL, RemoteRowGroups, row_group_spans
 from src.utils.metric import METRIC_CLIP, WPAccumulator
 
 
@@ -36,6 +37,9 @@ class TrainConfig:
     fit_sequences: int = 3872  # sample row groups 0 .. fit_sequences-1 are fitted
     holdout: int = 128  # the next ``holdout`` row groups are scored as a diagnostic
     eval_every: int = 4  # holdout evaluations every N sequence batches
+    min_lr: float = 0.0  # floor of the cosine schedule
+    full_data: bool = False  # also fit every sequence past the local sample, streamed from the archive
+    local_first: int = 1024  # full data: local sequences trained first while the stream skips ahead
 
 
 @dataclass
@@ -85,28 +89,55 @@ def sequence_stats(targets: np.ndarray, predictions: np.ndarray, mask: np.ndarra
                      (w * p * p).sum(1), (w * y * p).sum(1)], axis=-1)
 
 
-def train(model, path: Path, config: TrainConfig, *, seed: int,
-          log=print) -> tuple[torch.nn.Module, History]:
-    """Fit on the leading sample sequences with a fixed schedule; return the final weights."""
+def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
+          archive: str = URL) -> tuple[torch.nn.Module, History]:
+    """Fit with a fixed schedule and return the final weights.
+
+    The fitted sequences are the leading ones of the local sample, plus, with
+    ``full_data``, every sequence past the sample's end, streamed from ``archive``.
+    """
     if config.chunk <= NEED.argmax():
         raise ValueError(f"chunk {config.chunk} leaves the first window without scored rows")
     fit_groups, holdout = split_groups(path, config.fit_sequences, config.holdout)
+    remote_groups, meta, spans = [], None, None
+    if config.full_data:
+        if config.epochs != int(config.epochs):
+            raise ValueError("full-data training runs whole epochs")
+        meta = pq.read_metadata(path.parent / "train.parquet.footer")
+        spans = row_group_spans(meta)
+        remote_groups = list(range(pq.ParquetFile(path).metadata.num_row_groups, meta.num_row_groups))
     rng = np.random.default_rng(seed)
     loss_fn = LOSSES[config.loss]
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    per_epoch = len(fit_groups) // config.batch_sequences  # full batches only
+    size = config.batch_sequences
+    per_epoch = (len(fit_groups) + len(remote_groups)) // size  # full batches only
     if per_epoch == 0:
-        raise ValueError(f"{len(fit_groups)} fitting sequences cannot fill a batch of "
-                         f"{config.batch_sequences}")
-    total_batches = max(1, round(config.epochs * per_epoch))
+        raise ValueError(f"{len(fit_groups)} fitting sequences cannot fill a batch of {size}")
+
+    def plan_epoch() -> list[list[int]]:
+        local = rng.permutation(fit_groups).tolist()
+        order = local[:config.local_first] + remote_groups + local[config.local_first:] \
+            if remote_groups else local
+        return [order[i * size:(i + 1) * size] for i in range(per_epoch)]
+
+    if config.full_data:  # one segment per epoch, each with its own pass over the archive
+        segments = [plan_epoch() for _ in range(int(config.epochs))]
+    else:
+        total = max(1, round(config.epochs * per_epoch))
+        order = []
+        while len(order) < total:
+            order += plan_epoch()
+        segments = [order[:total]]
+    total_batches = sum(len(segment) for segment in segments)
     steps_per_batch = math.ceil(NEED.size / config.chunk)
     total_steps = total_batches * steps_per_batch
+    floor = config.min_lr / config.lr
 
     def lr_at(step: int) -> float:
         if step < config.warmup_steps:
             return (step + 1) / config.warmup_steps
         progress = (step - config.warmup_steps) / max(1, total_steps - config.warmup_steps)
-        return 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
+        return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
     history = History()
@@ -119,38 +150,43 @@ def train(model, path: Path, config: TrainConfig, *, seed: int,
         log(f"  step {step:5d} batch {batches_done:3d}: holdout WP {result['weighted_pearson']:.5f}")
 
     evaluate(0, 0, None)
-    order = []
-    while len(order) < total_batches:
-        shuffled = rng.permutation(fit_groups).tolist()
-        size = config.batch_sequences
-        order += [shuffled[i * size:(i + 1) * size] for i in range(per_epoch)]
-    order = order[:total_batches]
-    step = 0
+    step = done = 0
     started = time.time()
     need_t = torch.from_numpy(NEED)
-    for done, batch in enumerate(iter_batches(path, order), start=1):
-        model.train()
-        n = len(batch.groups)
-        state = model.initial_state(n)
-        for start in range(0, NEED.size, config.chunk):
-            stop = start + config.chunk
-            x = torch.from_numpy(batch.features[:, start:stop])
-            y = torch.from_numpy(batch.targets[:, start:stop])
-            mask = need_t[start:stop].expand(n, -1)
-            prediction, state = model(x, state)
-            loss = loss_fn(prediction, y, mask)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if config.grad_clip:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            optimizer.step()
-            scheduler.step()
-            if not torch.isfinite(loss):
-                raise FloatingPointError(f"loss became {loss.item()} at step {step}")
-            state = [s.detach() for s in state]
-            step += 1
-        rate = step * config.chunk * config.batch_sequences / (time.time() - started)
-        log(f"  batch {done}/{total_batches} loss {loss.item():.4f} ({rate / 1e3:.0f}k rows/s)")
-        if done % config.eval_every == 0 or done == total_batches:
-            evaluate(step, done, loss.item())
+    far = set(remote_groups)
+    for segment in segments:
+        wanted = [g for batch in segment for g in batch if g in far]
+        remote = RemoteRowGroups(path.parent / "train.parquet.footer", wanted, url=archive, meta=meta,
+                                 spans=spans, log=log) if wanted else None
+        try:
+            for batch in iter_batches(path, segment, remote):
+                done += 1
+                model.train()
+                n = len(batch.groups)
+                state = model.initial_state(n)
+                for start in range(0, NEED.size, config.chunk):
+                    stop = start + config.chunk
+                    x = torch.from_numpy(batch.features[:, start:stop])
+                    y = torch.from_numpy(batch.targets[:, start:stop])
+                    mask = need_t[start:stop].expand(n, -1)
+                    prediction, state = model(x, state)
+                    loss = loss_fn(prediction, y, mask)
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    if config.grad_clip:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                    optimizer.step()
+                    scheduler.step()
+                    if not torch.isfinite(loss):
+                        raise FloatingPointError(f"loss became {loss.item()} at step {step}")
+                    state = [s.detach() for s in state]
+                    step += 1
+                del batch  # free the arrays before the prefetched batch is handed over
+                rate = step * config.chunk * size / (time.time() - started)
+                log(f"  batch {done}/{total_batches} loss {loss.item():.4f} ({rate / 1e3:.0f}k rows/s)")
+                if done % config.eval_every == 0 or done == total_batches:
+                    evaluate(step, done, loss.item())
+        finally:
+            if remote is not None:
+                remote.close()
     return model, history

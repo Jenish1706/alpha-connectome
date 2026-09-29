@@ -158,13 +158,15 @@ binding resource.
   `datasets/train.parquet.footer`. Each row group is decoded in memory with
   that footer as metadata, and nothing is written to disk.
 - The reader keeps a bounded in-RAM buffer of compressed row groups, about
-  2.5 GB. When the buffer is full it trickles instead of pausing, so the
-  connection never idles long enough to be dropped.
+  1.2 GB, or almost two batches. RAM is 15 GB and the loader already peaks
+  near 10 GB. When the buffer is full the reader trickles instead of pausing,
+  so the connection never idles long enough to be dropped.
 - Every 256 MB it snapshots the decompressor (`zlib.decompressobj.copy()`).
   After a network error it resumes with a range request from the last
   snapshot, instead of restarting the 34 GB download.
 - Epoch order: 1,024 local sequences first, which covers the time the reader
-  needs to skip the first 11 GB. Then the remote sequences in file order,
+  needs to skip the first 11 GB. The archive serves 83 MB/s here; the skip
+  measured 195 s, against about 290 s for those four batches. Then the remote sequences in file order,
   then the remaining local ones; the dropped remainder is random local
   sequences. Row groups are sequences whose ids are shuffled relative to
   time, so file order carries no temporal leak.
