@@ -58,6 +58,7 @@ import yaml  # noqa: E402
 
 from src.data.schema import SEQUENCE_LENGTH, WARMUP, iter_sequences  # noqa: E402
 from src.export import export_package  # noqa: E402
+from src.models.ensemble import Ensemble  # noqa: E402
 from src.models.recurrent import RecurrentRegressor, load_baseline_onnx  # noqa: E402
 from src.training.fit import TrainConfig, predict, sequence_stats, train  # noqa: E402
 from src.utils.metric import EPS, WPAccumulator  # noqa: E402
@@ -115,6 +116,27 @@ def build_model(config: dict) -> RecurrentRegressor:
     elif config["init"] != "scratch":
         raise ValueError(f"unknown init {config['init']!r}")
     return model
+
+
+def load_run_model(run_dir: Path) -> torch.nn.Module:
+    """A finished run's final model, rebuilt from its recorded config and saved weights."""
+    config = json.loads((run_dir / "result.json").read_text())["config"]
+    model = assemble(build_model({**config, "init": "scratch"}), config)
+    model.load_state_dict(torch.load(run_dir / "model.pt"))
+    return model.eval()
+
+
+def assemble(model: torch.nn.Module, config: dict) -> torch.nn.Module:
+    """The trained model, averaged with a finished run's model when the config names one.
+
+    ``ensemble_with`` is that run's directory, relative to the repository;
+    ``ensemble_weight`` is the trained model's share (0.5 by default).
+    """
+    partner = config.get("ensemble_with")
+    if partner is None:
+        return model
+    weight = config.get("ensemble_weight", 0.5)
+    return Ensemble([load_run_model(ROOT / partner), model], [1 - weight, weight])
 
 
 def wp_from_stats(stats: np.ndarray) -> np.ndarray:
@@ -212,6 +234,7 @@ def run(config: dict, run_dir: Path) -> dict:
         model, history = train(model, TRAIN, train_config, seed=config["seed"], log=log)
         record["holdout"] = history.records
     record["train_seconds"] = round(time.time() - started, 1)
+    model = assemble(model, config)
     torch.save(model.state_dict(), run_dir / "model.pt")
 
     log("scoring the full validation set")

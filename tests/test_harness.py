@@ -1,7 +1,9 @@
 """Experiment harness: features, export parity, bootstrap and training loop."""
 
 import importlib.util
+import json
 import sys
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -83,6 +85,42 @@ def test_export_checks_the_one_row_path(tmp_path):
 
     with pytest.raises(RuntimeError, match="disagrees with forward"):
         export_package(Broken(hidden=8), tmp_path / "package")
+
+
+def test_ensembles_average_their_members_and_export(tmp_path):
+    run = _script("run_experiment")
+    bench = _script("benchmark_latency")
+    torch.manual_seed(0)
+    config = {"features": [], "init": "scratch", "model": {"hidden": 8, "tanh_tau": 8.0}}
+    partner = run.build_model(config).eval()
+    (tmp_path / "partner").mkdir()
+    torch.save(partner.state_dict(), tmp_path / "partner" / "model.pt")
+    (tmp_path / "partner" / "result.json").write_text(json.dumps({"config": config}))
+    member = run.build_model({**config, "model": {"hidden": 4, "layers": 1}}).eval()
+    ensemble_config = {**config, "model": {"hidden": 4, "layers": 1},
+                       "ensemble_with": str(tmp_path / "partner"), "ensemble_weight": 0.25}
+    model = run.assemble(member, ensemble_config)
+    x = torch.randn(2, 300, N_RAW)
+    with torch.no_grad():
+        got, _ = model(x, model.initial_state(2))
+        a, _ = partner(x, partner.initial_state(2))
+        b, _ = member(x, member.initial_state(2))
+    torch.testing.assert_close(got, 0.75 * a + 0.25 * b)
+
+    package = export_package(model, tmp_path / "package")  # also checks step against forward
+    ops = Counter(n.op_type for n in onnx.load(str(package / "model.onnx")).graph.node)
+    assert ops["GRU"] == 3 and ops["Add"] == 3 and "Div" not in ops  # two heads' biases, one average
+    solution = bench.load_solution(package / "solution.py")
+    rows = x[0].numpy()
+    replayed = [solution.predict(DataPoint(3, i, i >= WARMUP, rows[i])) for i in range(300)]
+    assert np.abs(np.stack(replayed[WARMUP:]) - got[0, WARMUP:].numpy()).max() < 1e-5
+
+    (tmp_path / "ensemble").mkdir()  # a finished ensemble run rebuilds from its record
+    torch.save(model.state_dict(), tmp_path / "ensemble" / "model.pt")
+    (tmp_path / "ensemble" / "result.json").write_text(json.dumps({"config": ensemble_config}))
+    with torch.no_grad():
+        again, _ = (rebuilt := run.load_run_model(tmp_path / "ensemble"))(x, rebuilt.initial_state(2))
+    torch.testing.assert_close(again, got, rtol=0, atol=0)
 
 
 def test_baseline_weights_port_exactly(valid_path, baseline_solution):
