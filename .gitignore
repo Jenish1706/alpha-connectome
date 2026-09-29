@@ -9,6 +9,8 @@
 checkpoints/
 logs/
 *.onnx
+# The champion's submission package is kept in git (refreshed by scripts/run_experiment.py).
+!/submission/champion/model.onnx
 
 # Python
 __pycache__/

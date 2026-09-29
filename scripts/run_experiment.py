@@ -65,6 +65,7 @@ from src.utils.metric import EPS, WPAccumulator  # noqa: E402
 RUNS = ROOT / "runs"
 CHAMPION = ROOT / "configs" / "champion.json"
 CHAMPION_DIR = RUNS / "champion"
+SUBMISSION = ROOT / "submission" / "champion"
 TRAIN = ROOT / "datasets" / "train_head.parquet"
 VALID = ROOT / "datasets" / "valid.parquet"
 BASELINE = ROOT / "wnn_connectome_starterpack" / "baseline" / "baseline.onnx"
@@ -311,6 +312,9 @@ def install_champion(record: dict, run_dir: Path) -> None:
     fresh.rename(CHAMPION_DIR)
     if old.exists():
         shutil.rmtree(old)
+    SUBMISSION.mkdir(parents=True, exist_ok=True)  # the tracked copy of the champion's package
+    for name in ("solution.py", "model.onnx", "model.json"):
+        shutil.copy(CHAMPION_DIR / "package" / name, SUBMISSION / name)
     keys = ("name", "description", "wp", "t0", "t1", "wp_all_rows", "latency_us", "latency_scaled_us",
             "latency_ratio", "latency_pinned_us", "reference_latency_us", "run_dir", "config",
             "finished")

@@ -1,0 +1,19 @@
+{
+  "features": [],
+  "state_names": [
+    "hidden_0",
+    "hidden_1"
+  ],
+  "state_shapes": [
+    [
+      1,
+      1,
+      128
+    ],
+    [
+      1,
+      1,
+      128
+    ]
+  ]
+}
