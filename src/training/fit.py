@@ -9,6 +9,7 @@ Whether a run helps is decided on the validation set by scripts/run_experiment.p
 
 from __future__ import annotations
 
+import functools
 import math
 import time
 from dataclasses import dataclass, field
@@ -34,12 +35,15 @@ class TrainConfig:
     grad_clip: float = 1.0
     warmup_steps: int = 20
     loss: str = "mse"
+    hybrid_alpha: float = 0.8  # weight of the Pearson term in the hybrid loss
     fit_sequences: int = 3872  # sample row groups 0 .. fit_sequences-1 are fitted
     holdout: int = 128  # the next ``holdout`` row groups are scored as a diagnostic
     eval_every: int = 4  # holdout evaluations every N sequence batches
     min_lr: float = 0.0  # floor of the cosine schedule
     full_data: bool = False  # also fit every sequence past the local sample, streamed from the archive
     local_first: int = 1024  # full data: local sequences trained first while the stream skips ahead
+    ema_decay: float = 0.0  # > 0: return an exponential moving average of the weights ...
+    ema_from: float = 0.7  # ... taken over the steps after this fraction of the schedule
 
 
 @dataclass
@@ -108,6 +112,10 @@ def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
         remote_groups = list(range(pq.ParquetFile(path).metadata.num_row_groups, meta.num_row_groups))
     rng = np.random.default_rng(seed)
     loss_fn = LOSSES[config.loss]
+    if config.loss == "hybrid":
+        loss_fn = functools.partial(loss_fn, alpha=config.hybrid_alpha)
+    elif config.hybrid_alpha != TrainConfig.hybrid_alpha:
+        raise ValueError(f"hybrid_alpha does not apply to the {config.loss} loss")
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     size = config.batch_sequences
     per_epoch = (len(fit_groups) + len(remote_groups)) // size  # full batches only
@@ -132,6 +140,9 @@ def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
     steps_per_batch = math.ceil(NEED.size / config.chunk)
     total_steps = total_batches * steps_per_batch
     floor = config.min_lr / config.lr
+    params = list(model.parameters())
+    ema_start = round(config.ema_from * total_steps) if config.ema_decay else None
+    ema = None
 
     def lr_at(step: int) -> float:
         if step < config.warmup_steps:
@@ -181,6 +192,13 @@ def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
                         raise FloatingPointError(f"loss became {loss.item()} at step {step}")
                     state = [s.detach() for s in state]
                     step += 1
+                    if ema_start is not None and step >= ema_start:
+                        with torch.no_grad():
+                            if ema is None:
+                                ema = [p.detach().clone() for p in params]
+                            else:
+                                for e, p in zip(ema, params, strict=True):
+                                    e.lerp_(p, 1 - config.ema_decay)
                 del batch  # free the arrays before the prefetched batch is handed over
                 rate = step * config.chunk * size / (time.time() - started)
                 log(f"  batch {done}/{total_batches} loss {loss.item():.4f} ({rate / 1e3:.0f}k rows/s)")
@@ -189,4 +207,11 @@ def train(model, path: Path, config: TrainConfig, *, seed: int, log=print,
         finally:
             if remote is not None:
                 remote.close()
+    if ema is not None:  # the average replaces the final weights; the raw ones were scored above
+        with torch.no_grad():
+            for e, p in zip(ema, params, strict=True):
+                p.copy_(e)
+        log(f"  weights: EMA {config.ema_decay} over steps {ema_start}-{step}")
+        evaluate(step, done, None)
+        history.records[-1]["ema"] = True
     return model, history

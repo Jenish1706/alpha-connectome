@@ -32,9 +32,11 @@ def pearson(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) 
     return 1 - (cov / var.clamp_min(1e-12).sqrt()).mean()
 
 
-def hybrid(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """0.8 weighted Pearson loss + 0.2 MSE: the correlation objective with MSE anchoring scale."""
-    return 0.8 * pearson(prediction, target, mask) + 0.2 * mse(prediction, target, mask)
+def hybrid(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor,
+           alpha: float = 0.8) -> torch.Tensor:
+    """alpha weighted Pearson loss + (1 - alpha) MSE: the correlation objective, MSE anchoring scale."""
+    beta = round(1.0 - alpha, 12)  # exactly 0.2 for the default, as before alpha was a parameter
+    return alpha * pearson(prediction, target, mask) + beta * mse(prediction, target, mask)
 
 
 LOSSES = {"mse": mse, "pearson": pearson, "hybrid": hybrid}

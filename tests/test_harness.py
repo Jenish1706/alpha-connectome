@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from src.export import export_package
 from src.models.features import N_RAW, FeatureLayer
 from src.models.recurrent import RecurrentRegressor, load_baseline_onnx
 from src.training.fit import TrainConfig, predict, sequence_stats, train
+from src.training.losses import hybrid, mse, pearson
 from src.utils.metric import global_wp
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +95,36 @@ def test_training_keeps_the_best_holdout_checkpoint(write_dataset):
     assert rescored == pytest.approx(history.records[-1]["holdout_wp"], abs=1e-9)  # final weights kept
 
 
+def test_ema_replaces_the_final_weights(write_dataset):
+    path = write_dataset(Kind.TRAIN, seq_ids=(1, 2, 3))
+    config = TrainConfig(epochs=1, batch_sequences=2, chunk=5_000, fit_sequences=2, holdout=1,
+                         eval_every=1, lr=1e-3)
+
+    def fit(**changes):
+        torch.manual_seed(0)
+        return train(RecurrentRegressor(hidden=8), path, replace(config, **changes), seed=0,
+                     log=lambda *_: None)
+
+    raw, _ = fit()
+    last, _ = fit(ema_decay=0.5, ema_from=1.0)  # averaging starts at the final step
+    for a, b in zip(raw.parameters(), last.parameters(), strict=True):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    averaged, history = fit(ema_decay=0.5, ema_from=0.5)
+    assert [(r["step"], r.get("ema", False)) for r in history.records] == [(0, False), (4, False), (4, True)]
+    assert any((a != b).any() for a, b in zip(raw.parameters(), averaged.parameters(), strict=True))
+    rescored = predict(averaged, path, [2]).result()["weighted_pearson"]
+    assert rescored == pytest.approx(history.records[-1]["holdout_wp"], abs=1e-9)
+
+
+def test_hybrid_alpha_interpolates_the_losses():
+    torch.manual_seed(0)
+    y, p = torch.randn(2, 300, 2), torch.randn(2, 300, 2)
+    mask = torch.ones(2, 300, dtype=torch.bool)
+    assert hybrid(p, y, mask) == 0.8 * pearson(p, y, mask) + 0.2 * mse(p, y, mask)
+    torch.testing.assert_close(hybrid(p, y, mask, alpha=1.0), pearson(p, y, mask))
+    torch.testing.assert_close(hybrid(p, y, mask, alpha=0.0), mse(p, y, mask))
+
+
 def test_export_rejects_value_dependent_branches(tmp_path):
     class Guarded(RecurrentRegressor):
         def forward(self, x, state):
@@ -141,3 +173,5 @@ def test_training_rejects_bad_schedules(write_dataset):
         train(model, path, TrainConfig(epochs=1, fit_sequences=3, holdout=1), seed=0)
     with pytest.raises(ValueError, match="cannot fill a batch"):
         train(model, path, TrainConfig(epochs=1, batch_sequences=4, fit_sequences=2, holdout=1), seed=0)
+    with pytest.raises(ValueError, match="does not apply"):
+        train(model, path, TrainConfig(epochs=1, fit_sequences=2, holdout=1, hybrid_alpha=0.9), seed=0)
