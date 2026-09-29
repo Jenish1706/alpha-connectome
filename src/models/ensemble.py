@@ -1,9 +1,9 @@
-"""A weighted average of trained models, exported as one graph.
+"""A weighted sum of models, exported as one graph: an average, or a model plus a residual.
 
 Members run side by side on the same raw row, each with its own recurrent
-state; the package carries all the states. In the exported one-row graph the
-weights fold into each member's output scale, so averaging costs one Add per
-extra member.
+state (possibly none); the package carries all the states. In the exported
+one-row graph the weights fold into each member's output scale, so combining
+costs one Add per extra member.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from src.models.features import N_RAW, FeatureLayer
 class Ensemble(nn.Module):
     def __init__(self, members, weights):
         super().__init__()
-        if len(members) != len(weights) or abs(sum(weights) - 1) > 1e-9:
-            raise ValueError(f"need one weight per member, summing to 1; got {weights}")
+        if len(members) != len(weights):
+            raise ValueError(f"need one weight per member; got {weights}")
         self.members = nn.ModuleList(members)
         self.weights = [float(w) for w in weights]
         self.input_dim = N_RAW

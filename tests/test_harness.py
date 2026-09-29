@@ -144,6 +144,38 @@ def test_narrow_warm_start_keeps_the_most_used_units(baseline_solution):
         load_baseline_onnx(RecurrentRegressor(hidden=160), onnx_path)
 
 
+def test_residual_member_trains_on_the_sum_with_its_partner_frozen(tmp_path, write_dataset):
+    run = _script("run_experiment")
+    torch.manual_seed(0)
+    gru_config = {"features": [], "init": "scratch", "model": {"hidden": 8, "tanh_tau": 8.0}}
+    partner = run.build_model(gru_config).eval()
+    (tmp_path / "partner").mkdir()
+    torch.save(partner.state_dict(), tmp_path / "partner" / "model.pt")
+    (tmp_path / "partner" / "result.json").write_text(json.dumps({"config": gru_config}))
+    config = {"features": [], "init": "scratch", "model": {"kind": "row_mlp", "width": 16},
+              "ensemble_with": str(tmp_path / "partner"), "ensemble_residual": True}
+    model = run.assemble(run.build_model(config), config)
+    x = torch.randn(2, 300, N_RAW)
+    with torch.no_grad():
+        start, _ = model(x, model.initial_state(2))
+        alone, _ = partner(x, partner.initial_state(2))
+    # The member starts at zero. Not bit-exact: torch runs a frozen GRU on another CPU kernel.
+    torch.testing.assert_close(start, alone, rtol=0, atol=1e-6)
+
+    path = write_dataset(Kind.TRAIN, seq_ids=(1, 2, 3))
+    config_train = TrainConfig(epochs=1, batch_sequences=2, chunk=5_000, fit_sequences=2, holdout=1,
+                               lr=1e-3, loss="hybrid")
+    model, _ = train(model, path, config_train, seed=0, log=lambda *_: None)
+    for trained, frozen in zip(model.members[0].parameters(), partner.parameters(), strict=True):
+        assert torch.equal(trained, frozen)
+    assert model.members[1].out.weight.abs().sum() > 0
+    package = export_package(model.eval(), tmp_path / "package")  # checks step against forward
+    ops = Counter(n.op_type for n in onnx.load(str(package / "model.onnx")).graph.node)
+    assert ops["GRU"] == 2 and ops["Relu"] == 1
+    with pytest.raises(ValueError, match="from scratch"):
+        run.build_model({**config, "init": "baseline"})
+
+
 def test_baseline_weights_port_exactly(valid_path, baseline_solution):
     onnx_path = baseline_solution.parent / "baseline.onnx"
     model = load_baseline_onnx(RecurrentRegressor(), onnx_path).eval()

@@ -59,6 +59,7 @@ import yaml  # noqa: E402
 from src.data.schema import SEQUENCE_LENGTH, WARMUP, iter_sequences  # noqa: E402
 from src.export import export_package  # noqa: E402
 from src.models.ensemble import Ensemble  # noqa: E402
+from src.models.mlp import RowMLP  # noqa: E402
 from src.models.recurrent import RecurrentRegressor, load_baseline_onnx  # noqa: E402
 from src.training.fit import TrainConfig, predict, sequence_stats, train  # noqa: E402
 from src.utils.metric import EPS, WPAccumulator  # noqa: E402
@@ -109,8 +110,16 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
-def build_model(config: dict) -> RecurrentRegressor:
-    model = RecurrentRegressor(features=config["features"], **config.get("model", {}))
+def build_model(config: dict) -> torch.nn.Module:
+    options = dict(config.get("model", {}))
+    kind = options.pop("kind", "gru")
+    if kind == "row_mlp":  # stateless, trained from scratch
+        if config["features"] or config["init"] != "scratch":
+            raise ValueError("a row_mlp takes no features and starts from scratch")
+        return RowMLP(**options)
+    if kind != "gru":
+        raise ValueError(f"unknown model kind {kind!r}")
+    model = RecurrentRegressor(features=config["features"], **options)
     if config["init"] == "baseline":
         load_baseline_onnx(model, BASELINE)
     elif config["init"] != "scratch":
@@ -127,16 +136,22 @@ def load_run_model(run_dir: Path) -> torch.nn.Module:
 
 
 def assemble(model: torch.nn.Module, config: dict) -> torch.nn.Module:
-    """The trained model, averaged with a finished run's model when the config names one.
+    """The model combined with a finished run's model, when the config names one.
 
-    ``ensemble_with`` is that run's directory, relative to the repository;
-    ``ensemble_weight`` is the trained model's share (0.5 by default).
+    ``ensemble_with`` is that run's directory, relative to the repository. By
+    default the two are averaged after training, ``ensemble_weight`` being the
+    new model's share (0.5). With ``ensemble_residual`` the new model is added
+    to the partner, which stays frozen, and is trained on their sum.
     """
     partner = config.get("ensemble_with")
     if partner is None:
         return model
+    partner = load_run_model(ROOT / partner)
+    if config.get("ensemble_residual"):
+        partner.requires_grad_(False)
+        return Ensemble([partner, model], [1.0, 1.0])
     weight = config.get("ensemble_weight", 0.5)
-    return Ensemble([load_run_model(ROOT / partner), model], [1 - weight, weight])
+    return Ensemble([partner, model], [1 - weight, weight])
 
 
 def wp_from_stats(stats: np.ndarray) -> np.ndarray:
@@ -227,6 +242,9 @@ def run(config: dict, run_dir: Path) -> dict:
     torch.manual_seed(config["seed"])
     torch.set_num_threads(4)
     model = build_model(config)
+    residual = bool(config.get("ensemble_residual"))
+    if residual:  # trained on the sum with its frozen partner
+        model = assemble(model, config)
     train_config = TrainConfig(**config.get("train", {}))
     started = time.time()
     if train_config.epochs > 0:
@@ -234,7 +252,8 @@ def run(config: dict, run_dir: Path) -> dict:
         model, history = train(model, TRAIN, train_config, seed=config["seed"], log=log)
         record["holdout"] = history.records
     record["train_seconds"] = round(time.time() - started, 1)
-    model = assemble(model, config)
+    if not residual:
+        model = assemble(model, config)
     torch.save(model.state_dict(), run_dir / "model.pt")
 
     log("scoring the full validation set")
