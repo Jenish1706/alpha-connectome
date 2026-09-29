@@ -83,8 +83,31 @@ def _onnx_gates_to_torch(w: np.ndarray, hidden: int) -> np.ndarray:
     return np.concatenate([r, z, n])
 
 
+def _kept_units(weights: dict, grus: list, head, keep: int) -> list[np.ndarray]:
+    """Units to keep per block when narrowing the baseline: the most-used ones.
+
+    The last block's units are ranked by their output-head weights; each
+    earlier block's units by the next block's input weights on them. Keeping
+    every unit keeps them in order.
+    """
+    kept = [None] * len(grus)
+    kept[-1] = np.argsort(-np.linalg.norm(weights[head.input[1]], axis=1))[:keep]
+    for i in range(len(grus) - 2, -1, -1):
+        w_next = weights[grus[i + 1].input[1]][0]  # (3 * hidden, hidden), columns = block i units
+        kept[i] = np.argsort(-np.linalg.norm(w_next, axis=0))[:keep]
+    return [np.sort(k) for k in kept]
+
+
+def _gate_rows(units: np.ndarray, hidden: int) -> np.ndarray:
+    return np.concatenate([g * hidden + units for g in range(3)])
+
+
 def load_baseline_onnx(model: RecurrentRegressor, path: str | Path) -> RecurrentRegressor:
-    """Copy the baseline's weights into ``model`` (zero weights for any extra inputs)."""
+    """Copy the baseline's weights into ``model`` (zero weights for any extra inputs).
+
+    A narrower model keeps the baseline's most-used hidden units (see
+    ``_kept_units``), slicing every gate consistently.
+    """
     import onnx
     from onnx import numpy_helper
 
@@ -94,18 +117,25 @@ def load_baseline_onnx(model: RecurrentRegressor, path: str | Path) -> Recurrent
     head = next(n for n in graph.node if n.op_type == "MatMul")
     if len(grus) != model.layers:
         raise ValueError(f"baseline has {len(grus)} GRU blocks, model has {model.layers}")
+    base = weights[grus[0].input[2]].shape[-1]
+    if model.hidden > base:
+        raise ValueError(f"baseline width is {base}, model width is {model.hidden}")
+    kept = _kept_units(weights, grus, head, model.hidden)
     with torch.no_grad():
-        for block, node in zip(model.blocks, grus, strict=True):
-            gru, hidden = block["gru"], model.hidden
+        for i, (block, node) in enumerate(zip(model.blocks, grus, strict=True)):
+            gru = block["gru"]
             w, r, b = (weights[name] for name in node.input[1:4])
-            if r.shape[-1] != hidden:
-                raise ValueError(f"baseline width is {r.shape[-1]}, model width is {hidden}")
-            w_ih = _onnx_gates_to_torch(w[0], hidden)
+            rows = _gate_rows(kept[i], base)
+            w_ih = _onnx_gates_to_torch(w[0], base)[rows]
+            if i > 0:
+                w_ih = w_ih[:, kept[i - 1]]
             gru.weight_ih_l0.zero_()
-            gru.weight_ih_l0[:, :w_ih.shape[1]] = torch.from_numpy(w_ih)
-            gru.weight_hh_l0.copy_(torch.from_numpy(_onnx_gates_to_torch(r[0], hidden)))
-            gru.bias_ih_l0.copy_(torch.from_numpy(_onnx_gates_to_torch(b[0, :3 * hidden], hidden)))
-            gru.bias_hh_l0.copy_(torch.from_numpy(_onnx_gates_to_torch(b[0, 3 * hidden:], hidden)))
-        model.reg_head.weight.copy_(torch.from_numpy(weights[head.input[1]].T.copy()))
+            gru.weight_ih_l0[:, :w_ih.shape[1]] = torch.from_numpy(np.ascontiguousarray(w_ih))
+            w_hh = _onnx_gates_to_torch(r[0], base)[rows][:, kept[i]]
+            gru.weight_hh_l0.copy_(torch.from_numpy(np.ascontiguousarray(w_hh)))
+            gru.bias_ih_l0.copy_(torch.from_numpy(_onnx_gates_to_torch(b[0, :3 * base], base)[rows]))
+            gru.bias_hh_l0.copy_(torch.from_numpy(_onnx_gates_to_torch(b[0, 3 * base:], base)[rows]))
+        head_w = weights[head.input[1]].T[:, kept[-1]]
+        model.reg_head.weight.copy_(torch.from_numpy(np.ascontiguousarray(head_w)))
         model.reg_head.bias.copy_(torch.from_numpy(weights["reg_head.bias"].copy()))
     return model

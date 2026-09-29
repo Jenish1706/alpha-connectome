@@ -123,6 +123,27 @@ def test_ensembles_average_their_members_and_export(tmp_path):
     torch.testing.assert_close(again, got, rtol=0, atol=0)
 
 
+def test_narrow_warm_start_keeps_the_most_used_units(baseline_solution):
+    onnx_path = baseline_solution.parent / "baseline.onnx"
+    full = load_baseline_onnx(RecurrentRegressor(), onnx_path)
+    narrow = load_baseline_onnx(RecurrentRegressor(hidden=64), onnx_path)
+    k1 = full.reg_head.weight.norm(dim=0).argsort(descending=True)[:64].sort().values
+    k0 = full.blocks[1]["gru"].weight_ih_l0.norm(dim=0).argsort(descending=True)[:64].sort().values
+
+    def rows(k):
+        return torch.cat([g * 128 + k for g in range(3)])
+
+    first, second = (block["gru"] for block in full.blocks)
+    small0, small1 = (block["gru"] for block in narrow.blocks)
+    torch.testing.assert_close(narrow.reg_head.weight, full.reg_head.weight[:, k1], rtol=0, atol=0)
+    torch.testing.assert_close(small1.weight_hh_l0, second.weight_hh_l0[rows(k1)][:, k1], rtol=0, atol=0)
+    torch.testing.assert_close(small1.weight_ih_l0, second.weight_ih_l0[rows(k1)][:, k0], rtol=0, atol=0)
+    torch.testing.assert_close(small0.weight_ih_l0, first.weight_ih_l0[rows(k0)], rtol=0, atol=0)
+    torch.testing.assert_close(small0.bias_hh_l0, first.bias_hh_l0[rows(k0)], rtol=0, atol=0)
+    with pytest.raises(ValueError, match="baseline width"):
+        load_baseline_onnx(RecurrentRegressor(hidden=160), onnx_path)
+
+
 def test_baseline_weights_port_exactly(valid_path, baseline_solution):
     onnx_path = baseline_solution.parent / "baseline.onnx"
     model = load_baseline_onnx(RecurrentRegressor(), onnx_path).eval()
