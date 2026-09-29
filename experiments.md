@@ -143,6 +143,7 @@ validation row, ignoring the public mask.
 | S3b-0.90 | A3b Loss ratio, screen | α = 0.90 | 0.677836 | 0.506892 | +0.000599 vs T2.2d | 1.000 | 31.7 / 54.2 | Screen: below the margin |
 | S3b-0.95 | A3b Loss ratio, screen | α = 0.95 | 0.678312 | 0.507432 | +0.001075 vs T2.2d | 1.000 | 32.2 / 51.5 | Screen: below the margin, still rising |
 | S3b-1.0 | A3b Loss ratio, screen | α = 1.0: pure weighted Pearson, with the tanh clamp | 0.679133 | 0.508098 | +0.001896 vs T2.2d | 1.000 | 33.1 / 47.7 | **Screen: clears the margin**; rerun on full data as A3b |
+| A3b-0 | A3b Loss ratio | α = 1.0 on the full-data recipe | — | — | — | — | — | Failed: corrupt archive bytes at batch 13 of 80; reader hardened, rerun as A3b |
 
 ## Notes
 
@@ -380,3 +381,23 @@ to 0.44795. Pure Pearson lost 0.027 in T2.1a because outputs drifted past the
 metric's clip; the tanh clamp now bounds them, which was the MSE term's job,
 so the MSE term only pulls the fit away from the metric. The full-data
 recipe with α = 1.0 is the real candidate, A3b.
+
+**A3b-0.** The first full-data run with α = 1.0 failed at batch 13. The
+archive stream stopped inflating 17 GB in ("invalid distance code"), so the
+bytes the reader received were not the archive's. The likeliest cause is
+curl's own `--retry`. A retried transfer restarts its byte range and writes it
+to stdout after the part already written, so the reader sees repeated bytes.
+The proxy logged no failure for the archive host, so this is not proven.
+The reader now guards against bad bytes from any source:
+
+- it no longer uses curl's retry;
+- it decodes and checks every row group before handing it over: one whole
+  sequence, with finite features within ±8 (real features stay within
+  ±5.2);
+- when a row group fails the check, or the stream stops inflating, it reads
+  that row group again from the last snapshot before its start, going one
+  snapshot further back on each repeat.
+
+It addresses row groups by their offset in the uncompressed stream (tar data
+offset 1,589,760) instead of reading through `tarfile`. On the real archive,
+sequence 3,999 still decodes identically to the local sample.

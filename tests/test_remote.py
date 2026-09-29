@@ -13,7 +13,8 @@ from src.data.schema import Kind, SchemaError
 from src.models.features import N_RAW
 from src.training.data import columns_for, read_batch
 from src.training.fit import TrainConfig, train
-from src.training.remote import MEMBER, RemoteRowGroups, ResumableGzipStream, row_group_spans
+from src.training.remote import (MEMBER, CorruptStream, RemoteRowGroups, ResumableGzipStream,
+                                 row_group_spans)
 
 
 def _footer(path, out):
@@ -43,7 +44,22 @@ def test_gzip_stream_resumes_from_a_snapshot(tmp_path):
     stream = ResumableGzipStream(path.as_uri(), snapshot_every=256 << 10, fail_after=2 << 20)
     with stream:
         assert stream.read() == data
-    assert stream.resumes == 1
+    assert stream.restarts == 1
+
+
+def test_gzip_stream_rewinds_past_corrupt_bytes(tmp_path):
+    rng = np.random.default_rng(1)
+    data = rng.integers(0, 16, 6 << 20, dtype=np.uint8).tobytes()
+    path = tmp_path / "blob.gz"
+    path.write_bytes(gzip.compress(data, compresslevel=1))
+    with ResumableGzipStream(path.as_uri(), snapshot_every=256 << 10, corrupt_after=2 << 20) as stream:
+        good = b""
+        with pytest.raises(CorruptStream):
+            while piece := stream.read(1 << 16):
+                good += piece
+        assert data.startswith(good)
+        stream.rewind(len(good) // 2)  # an earlier offset: bytes are re-read, not skipped
+        assert stream.read() == data[len(good) // 2:]
 
 
 def test_gzip_stream_gives_up_after_its_retries(tmp_path):
@@ -69,6 +85,22 @@ def test_remote_row_groups_match_the_file(tmp_path, write_dataset):
             remote.get(0)
     finally:
         remote.close()
+
+
+def test_remote_row_groups_survive_corrupt_bytes(tmp_path, write_dataset):
+    path = write_dataset(Kind.TRAIN, seq_ids=(3, 1, 4, 2), name="train_full.parquet")
+    footer = _footer(path, tmp_path / "train.parquet.footer")
+    local = pq.ParquetFile(path)
+    columns = columns_for(local)
+    lines = []
+    remote = RemoteRowGroups(footer, [2, 3], url=_archive(tmp_path, path), log=lines.append,
+                             stream_options={"snapshot_every": 1 << 20, "corrupt_after": 20 << 20})
+    try:
+        for group in (2, 3):
+            assert remote.get(group, columns=columns).equals(local.read_row_group(group, columns=columns))
+    finally:
+        remote.close()
+    assert remote.rereads == 1 and any("came out corrupt" in line for line in lines)
 
 
 def test_remote_reader_checks_the_archive_holds_this_file(tmp_path, write_dataset):

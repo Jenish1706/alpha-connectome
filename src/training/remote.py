@@ -3,22 +3,28 @@
 The 29 GB ``train.parquet`` does not fit on this disk. The archive server
 honours byte ranges over HTTP/1.1, but the archive is one gzip stream, so it
 can only be read in order. ``RemoteRowGroups`` reads it once per epoch in a
-background thread. It parses the tar headers, finds ``train.parquet``, and
+background thread. It finds ``train.parquet``'s data in the tar stream, and
 cuts out the bytes of each wanted row group using the offsets in the saved
 footer (``datasets/train.parquet.footer``). ``decode_row_group`` then turns
 one row group's bytes into a table, with the footer as metadata.
 
-Two facts about the server shape the reader:
+Three facts about the transfer shape the reader:
 
 * A stream left idle for 60 s is dropped (30 s is fine), so the reader never
   stops reading. When its buffer is full it trickles 1 MB every 0.5 s.
-* Connections can still break. ``ResumableGzipStream`` snapshots the
-  decompressor every 256 MB of input, and after an error it resumes from the
-  last snapshot with a range request instead of starting over.
+* Connections can break. ``ResumableGzipStream`` snapshots the decompressor
+  every 256 MB of input and resumes from the latest snapshot with a range
+  request. curl's own ``--retry`` is not used: a retried transfer restarts its
+  range and would splice repeated bytes into the stream.
+* Bytes can arrive corrupt anyway (one run of A3b met an invalid deflate
+  code 17 GB in). So every row group is decoded and checked before it is
+  handed over, and one that fails, or a stream that stops inflating, is read
+  again from the latest snapshot before the row group's start.
 """
 
 from __future__ import annotations
 
+import bisect
 import io
 import subprocess
 import tarfile
@@ -27,86 +33,151 @@ import time
 import zlib
 from pathlib import Path
 
+import numpy as np
 import pyarrow.parquet as pq
+
+from src.data.schema import FEATURE_COLUMNS, SEQUENCE_LENGTH, SchemaError
 
 URL = "https://files.wundernn.io/wnn_connectome_starterpack.tar.gz"
 MEMBER = "wnn_connectome_starterpack/datasets/train.parquet"
 CHUNK = 1 << 20
 TAR_BUFFER = 8 << 20
+FETCH_ATTEMPTS = 4  # reads of one row group before giving up on it
+FEATURE_BOUND = 8.0  # rank-Gaussian inputs saturate at 5.2; corrupt floats rarely stay inside
 
 
-class ResumableGzipStream(io.RawIOBase):
-    """The uncompressed bytes of a remote .gz, read in order, surviving broken connections."""
+class CorruptStream(OSError):
+    """The compressed bytes stopped inflating: they must be read again."""
 
-    def __init__(self, url: str, *, snapshot_every: int = 256 << 20, retries: int = 8,
-                 fail_after: int | None = None):
+
+class StreamFailed(OSError):
+    """The archive cannot be read: out of restarts, or it ended early."""
+
+
+class ResumableGzipStream:
+    """The uncompressed bytes of a remote .gz, read in order, with restarts from snapshots.
+
+    ``position`` is the uncompressed offset of the next byte ``read`` returns.
+    A broken transfer resumes at ``position`` from the latest snapshot at or
+    before it; ``rewind`` re-reads from an earlier offset the same way.
+    """
+
+    def __init__(self, url: str, *, snapshot_every: int = 256 << 20, retries: int = 16,
+                 fail_after: int | None = None, corrupt_after: int | None = None):
         self.url, self.snapshot_every, self.retries = url, snapshot_every, retries
-        self._fail_after = fail_after  # test hook: kill the transfer once past this input offset
+        # Test hooks, each firing once past a compressed offset: a broken transfer, corrupt bytes.
+        self._fail_after, self._corrupt_after = fail_after, corrupt_after
         self._decompressor = zlib.decompressobj(wbits=31)
-        self._snapshot = (0, 0, self._decompressor.copy())  # (input offset, output offset, state)
-        self._in = 0  # compressed bytes consumed
-        self._out = 0  # uncompressed bytes produced so far (high-water mark)
-        self._discard = 0  # re-produced bytes to drop after a resume
-        self._pending = memoryview(b"")
-        self.resumes = 0
+        self._snapshots = [(0, 0, self._decompressor.copy())]  # (input offset, output offset, state)
+        self._in = 0  # compressed bytes fed to the decompressor
+        self._made = 0  # uncompressed offset of the decompressor's next output byte
+        self.position = 0
+        self._pending = memoryview(b"")  # decompressed bytes from ``position`` on
+        self.restarts = 0
         self._stopped = False
         self._proc = self._spawn(0)
 
     def _spawn(self, start: int) -> subprocess.Popen:
-        command = ["curl", "-sS", "-fL", "--http1.1", "--retry", "3", "-r", f"{start}-", self.url]
-        return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        command = ["curl", "-sS", "-fL", "--http1.1", "-r", f"{start}-", self.url]
+        return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 
-    def readable(self) -> bool:
-        return True
+    def __enter__(self):
+        return self
 
-    def readinto(self, buf) -> int:
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def read(self, n: int = -1) -> bytes:
+        """Up to ``n`` bytes from ``position`` on (all of them if n < 0); b"" at the end."""
+        if n < 0:
+            return b"".join(iter(lambda: self.read(TAR_BUFFER), b""))
         while not self._pending:
-            if self._decompressor.eof or not self._fill():
-                return 0
-        n = min(len(buf), len(self._pending))
-        buf[:n] = self._pending[:n]
+            if not self._fill():
+                return b""
+        out = bytes(self._pending[:n])
         self._pending = self._pending[n:]
-        return n
+        self.position += len(out)
+        return out
 
     def _fill(self) -> bool:
-        """Decompress one more chunk into the pending buffer; False at the end of the stream."""
+        """Inflate the next compressed chunk; False at the end of the stream."""
+        if self._decompressor.eof:
+            return False
         chunk = self._proc.stdout.read(CHUNK)
         if self._fail_after is not None and self._in > self._fail_after:
             self._fail_after = None
             self._proc.kill()
             chunk = b""
         if not chunk:
-            code = self._proc.wait()
-            if self._decompressor.eof or self._stopped:
+            self._proc.wait()
+            if self._stopped:
                 return False
-            self._resume(f"transfer ended early (curl exit {code})")
+            self._restart(self.position, "the transfer ended early")
             return True
+        if self._corrupt_after is not None and self._in > self._corrupt_after:
+            self._corrupt_after = None
+            chunk = bytes(b ^ 0x5A for b in chunk[:4096]) + chunk[4096:]
         self._in += len(chunk)
-        out = self._decompressor.decompress(chunk)
-        if self._discard:
-            drop = min(self._discard, len(out))
-            out, self._discard = out[drop:], self._discard - drop
-        self._out += len(out)
-        self._pending = memoryview(out)
-        if self._in - self._snapshot[0] >= self.snapshot_every:
-            self._snapshot = (self._in, self._out, self._decompressor.copy())
+        try:
+            out = self._decompressor.decompress(chunk)
+        except zlib.error as exc:
+            raise CorruptStream(f"deflate error near compressed offset {self._in}: {exc}") from exc
+        start, self._made = self._made, self._made + len(out)
+        if self._made > self.position:  # after a restart, output before ``position`` is dropped
+            self._pending = memoryview(out)[max(0, self.position - start):]
+        if self._in - self._snapshots[-1][0] >= self.snapshot_every:
+            self._snapshots.append((self._in, self._made, self._decompressor.copy()))
         return True
 
-    def _resume(self, reason: str) -> None:
-        if self.resumes >= self.retries:
-            raise OSError(f"archive stream failed {self.resumes} times; last: {reason}")
-        self.resumes += 1
-        start, produced, state = self._snapshot
-        self._proc.kill()
+    def rewind(self, offset: int, older: int = 0) -> None:
+        """Continue reading from uncompressed ``offset``, which may be behind ``position``.
+
+        Restarts from the latest snapshot at or before ``offset``, or ``older``
+        snapshots before that one, in case bad bytes reached a snapshot before
+        they stopped inflating.
+        """
+        self._restart(offset, f"re-reading from {offset}", older)
+
+    def _restart(self, offset: int, reason: str, older: int = 0) -> None:
+        if self.restarts >= self.retries:
+            raise StreamFailed(f"archive stream restarted {self.restarts} times; last: {reason}")
+        self.restarts += 1
+        # Snapshots past the restart point may have seen bad bytes: they are retaken on the way.
+        keep = bisect.bisect_right([made for _, made, _ in self._snapshots], offset)
+        del self._snapshots[max(1, keep - older):]
+        start, made, state = self._snapshots[-1]
+        self._kill()
         self._decompressor = state.copy()
-        self._in, self._discard = start, self._out - produced
+        self._in, self._made = start, made
+        self.position, self._pending = offset, memoryview(b"")
         self._proc = self._spawn(start)
+
+    def _kill(self) -> None:
+        if self._proc.poll() is None:
+            self._proc.kill()
+        self._proc.wait()
 
     def close(self) -> None:
         self._stopped = True
-        if getattr(self, "_proc", None) is not None and self._proc.poll() is None:
-            self._proc.kill()
-        super().close()
+        self._kill()
+
+
+def find_member(stream: ResumableGzipStream, name: str, limit: int = 64 << 20) -> tuple[int, int]:
+    """Uncompressed data offset and size of ``name`` in the tar stream, read from its start."""
+    head = bytearray()
+    while len(head) < limit:
+        piece = stream.read(CHUNK)
+        if not piece:
+            break
+        head += piece
+        try:
+            with tarfile.open(fileobj=io.BytesIO(bytes(head)), mode="r:") as tar:
+                for member in tar:
+                    if member.name == name:
+                        return member.offset_data, member.size
+        except tarfile.ReadError:  # a header cut off by the end of what has been read
+            continue
+    raise OSError(f"{name} not found in the archive's first {len(head)} bytes")
 
 
 def row_group_spans(meta) -> list[tuple[int, int]]:
@@ -159,6 +230,19 @@ def decode_row_group(meta, size: int, group: int, start: int, data: bytes, colum
     return pq.ParquetFile(_Span(data, start, size), metadata=meta).read_row_group(group, columns=columns)
 
 
+def check_row_group(table) -> None:
+    """Raise unless ``table`` is one whole sequence with bounded, finite features."""
+    if table.num_rows != SEQUENCE_LENGTH:
+        raise SchemaError(f"{table.num_rows} rows")
+    ids, steps = table["seq_ix"].to_numpy(), table["step_in_seq"].to_numpy()
+    if (ids != ids[0]).any() or (steps != np.arange(SEQUENCE_LENGTH)).any():
+        raise SchemaError("not one whole sequence")
+    for name in FEATURE_COLUMNS:
+        values = table[name].to_numpy()
+        if not (np.isfinite(values).all() and np.abs(values).max() <= FEATURE_BOUND):
+            raise SchemaError(f"feature {name} is out of range")
+
+
 class RemoteRowGroups:
     """Wanted row groups of the archive's train.parquet, read ahead into a bounded RAM buffer."""
 
@@ -172,6 +256,7 @@ class RemoteRowGroups:
         self.groups = sorted(groups)
         self.url, self.cap, self.timeout, self.log = url, buffer_bytes, timeout, log
         self.stream_options = stream_options or {}
+        self.rereads = 0
         self._buffer: dict[int, bytes] = {}
         self._used = 0
         self._error: BaseException | None = None
@@ -183,36 +268,20 @@ class RemoteRowGroups:
 
     def _run(self) -> None:
         try:
-            with ResumableGzipStream(self.url, **self.stream_options) as stream, \
-                    tarfile.open(fileobj=stream, mode="r|", bufsize=TAR_BUFFER) as tar:
-                for member in tar:
-                    if member.name == MEMBER:
-                        break
-                else:
-                    raise OSError(f"{MEMBER} not found in the archive")
-                if member.size != self.size:
-                    raise OSError(f"archive train.parquet is {member.size} bytes, footer implies {self.size}")
-                source = tar.extractfile(member)
-                position = 0
+            with ResumableGzipStream(self.url, **self.stream_options) as stream:
+                offset, size = find_member(stream, MEMBER)
+                if size != self.size:
+                    raise OSError(f"archive train.parquet is {size} bytes, footer implies {self.size}")
                 for group in self.groups:
-                    start, end = self.spans[group]
-                    while position < start:  # skip at full speed: nothing is buffered
-                        if self._closing:
-                            return
-                        skipped = source.read(min(TAR_BUFFER, start - position))
-                        if not skipped:
-                            raise OSError("archive ended before the wanted row groups")
-                        position += len(skipped)
-                    data = self._read(source, end - start)
-                    position = end
+                    data = self._fetch(stream, group, offset)
                     with self._cond:
-                        if self._closing:
+                        if self._closing or data is None:
                             return
                         self._buffer[group] = data
                         self._used += len(data)
                         self._cond.notify_all()
-                self.log(f"  remote: read {len(self.groups)} row groups "
-                         f"({stream.resumes} resumed connections)")
+                self.log(f"  remote: read {len(self.groups)} row groups ({stream.restarts} stream "
+                         f"restarts, {self.rereads} row groups re-read)")
         except BaseException as exc:  # surfaced to the consumer by get()
             with self._cond:
                 self._error = exc
@@ -222,20 +291,51 @@ class RemoteRowGroups:
                 self._done = True
                 self._cond.notify_all()
 
-    def _read(self, source, length: int) -> bytes:
+    def _fetch(self, stream: ResumableGzipStream, group: int, offset: int) -> bytes | None:
+        """One row group's checked bytes, re-read from a snapshot while they come out corrupt."""
+        start, end = self.spans[group]
+        for attempt in range(FETCH_ATTEMPTS):
+            try:
+                if not self._skip_to(stream, offset + start):
+                    return None
+                data = self._read(stream, end - start)
+                if data is None:
+                    return None
+                check_row_group(decode_row_group(self.meta, self.size, group, start, data))
+                return data
+            except StreamFailed:
+                raise
+            except Exception as exc:  # corrupt input either stops inflating or fails to decode
+                self.rereads += 1
+                self.log(f"  remote: row group {group} came out corrupt ({exc}); reading it again")
+                stream.rewind(offset + start, older=attempt)
+        raise OSError(f"row group {group} was still corrupt after {FETCH_ATTEMPTS} reads")
+
+    def _skip_to(self, stream: ResumableGzipStream, target: int) -> bool:
+        """Advance to ``target`` at full speed, nothing buffered; False when closing."""
+        if stream.position > target:
+            stream.rewind(target)
+        while stream.position < target:
+            if self._closing:
+                return False
+            if not stream.read(min(TAR_BUFFER, target - stream.position)):
+                raise StreamFailed("archive ended before the wanted row groups")
+        return True
+
+    def _read(self, stream: ResumableGzipStream, length: int) -> bytes | None:
         """Read one row group, trickling while the buffer is full so the connection stays busy."""
         parts, remaining = [], length
         while remaining:
+            if self._closing:
+                return None
             full = self._used >= self.cap
-            piece = source.read(min(CHUNK if full else TAR_BUFFER, remaining))
+            piece = stream.read(min(CHUNK if full else TAR_BUFFER, remaining))
             if not piece:
-                raise OSError("archive ended inside a row group")
+                raise StreamFailed("archive ended inside a row group")
             parts.append(piece)
             remaining -= len(piece)
             if full:
                 time.sleep(0.5)
-            if self._closing:
-                break
         return b"".join(parts)
 
     def get(self, group: int, columns=None):
