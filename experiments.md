@@ -142,6 +142,7 @@ validation row, ignoring the public mask.
 | S3b-0.85 | A3b Loss ratio, screen | Hybrid α = 0.85 instead of 0.8, on the T2.2d recipe | 0.677458 | 0.506345 | +0.000222 vs T2.2d | 1.000 | 33.3 / 53.8 | Screen: below the margin |
 | S3b-0.90 | A3b Loss ratio, screen | α = 0.90 | 0.677836 | 0.506892 | +0.000599 vs T2.2d | 1.000 | 31.7 / 54.2 | Screen: below the margin |
 | S3b-0.95 | A3b Loss ratio, screen | α = 0.95 | 0.678312 | 0.507432 | +0.001075 vs T2.2d | 1.000 | 32.2 / 51.5 | Screen: below the margin, still rising |
+| S3b-1.0 | A3b Loss ratio, screen | α = 1.0: pure weighted Pearson, with the tanh clamp | 0.679133 | 0.508098 | +0.001896 vs T2.2d | 1.000 | 33.1 / 47.7 | **Screen: clears the margin**; rerun on full data as A3b |
 
 ## Notes
 
@@ -372,3 +373,10 @@ Validation WP, all-rows WP and the holdout all rise with α, and the steps grow.
 No single step clears the 0.0016 margin, though; the largest is +0.0011 at
 0.95. The curve has not peaked at the edge of the requested range, so the
 sweep continues past it, as the τ sweep did.
+
+At α = 1.0, pure weighted Pearson, WP is 0.679133: +0.0019 over T2.2d
+(P = 1.000), clearing the margin, and +0.0008 over α = 0.95. The holdout rose
+to 0.44795. Pure Pearson lost 0.027 in T2.1a because outputs drifted past the
+metric's clip; the tanh clamp now bounds them, which was the MSE term's job,
+so the MSE term only pulls the fit away from the metric. The full-data
+recipe with α = 1.0 is the real candidate, A3b.
