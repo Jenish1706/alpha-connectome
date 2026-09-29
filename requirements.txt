@@ -5,3 +5,4 @@ psutil>=5.9
 pytest>=7.0
 onnxruntime>=1.16
 PyYAML>=6.0
+onnx>=1.16

@@ -1,0 +1,403 @@
+# Experiments
+
+Research loop toward Global WP 0.665+ on the validation set, starting from the
+starter pack GRU baseline (0.617052). Each iteration changes one thing relative
+to the current champion, then runs `python scripts/run_experiment.py`. A second
+phase aims at 0.685 along four axes (A1-A4), planned in `research_notes.md`.
+
+## Protocol
+
+- **Data.** `datasets/train_head.parquet` holds the first 4,000 of the 10,607
+  training sequences, byte-identical to the original file. The first 3,872 are
+  used for fitting. The last 128 are a holdout, scored during training as a
+  diagnostic only: the baseline was most likely fitted on those sequences, so
+  its holdout score is in-sample. The 1,873 validation sequences are used only
+  for scoring. With `full_data` (from A1 on), each epoch also fits the 6,607
+  sequences past the sample, streamed from the starter pack archive without
+  touching disk (`src/training/remote.py`); the holdout is unchanged.
+- **Recipe.** Models warm-start from the starter pack baseline weights (two
+  GRU blocks of width 128 and a linear head). New input features get zero input
+  weights, so a warm-started model begins exactly at the baseline. Training
+  uses truncated BPTT with 256 sequences side by side and 250-step windows,
+  on a fixed schedule, and keeps the final weights.
+- **Scoring.** Global WP over the full validation set, computed like the
+  official scorer (`need_prediction AND is_scored`). WP over every required
+  row is recorded as well, since the FAQ warns against overfitting the public
+  mask.
+- **Serving parity.** Engineered features are computed inside the model and
+  therefore inside the exported ONNX graph; the solution only feeds raw rows.
+  Each run replays the first four validation sequences row by row through the
+  exported package, in an isolated interpreter started in the package
+  directory, and its predictions must match the batched ones within 1e-4.
+- **Latency.** The mean callback time from `scripts/benchmark_latency.py` over
+  two validation sequences. The 60 µs ceiling was set when the starter pack
+  solution measured 54 µs on the host of the time. This session runs on a
+  faster host, where that solution measures about 35 µs, so two checks apply:
+  - as measured, the median of three unpinned runs must be at most 60 µs;
+  - rescaled to the 54 µs host, the candidate must be at most 60 µs. The
+    rescaled figure is 54 µs times the ratio of the fastest of nine pinned
+    candidate runs to the fastest of nine interleaved starter pack runs. That
+    is the same as being at most 11% slower than the starter pack solution.
+    Interference only ever adds time, and the fastest candidate run is stable
+    to about ±0.5 µs, while medians drifted by ±2.4 µs between runs.
+
+  The rescaled check is the binding one here. It keeps the ceiling's original
+  margin under the scorer's budget: 60 minutes for 39.4M test rows, about
+  91 µs a row on the scorer's own hardware. From A1 on, runs happen on a
+  slower host: the starter pack measures 35.2 µs pinned there, against 32.2 µs
+  before, so raw figures from the two hosts differ for the same model while
+  the rescaled ones stay comparable.
+- **Acceptance.** A candidate is accepted when all of these hold:
+  - both latency checks pass,
+  - WP beats the champion's WP by at least 0.0016,
+  - a paired bootstrap over validation sequences, with 2,000 resamples, gives
+    P(candidate > champion) of at least 0.95.
+
+  The margin covers training noise, which the bootstrap cannot see. Three seeds
+  of the E01 recipe scored 0.653042, 0.653276 and 0.651986: a WP sd of 0.00069.
+  Two single runs therefore differ by noise alone with an sd of about 0.00097,
+  and 1.645 of those, the one-sided 95% bound, is 0.0016. The bootstrap alone
+  called seed 1 better than seed 2 with P = 1.000.
+- **First champion.** Only the untrained starter pack baseline can become the
+  first champion. Every later candidate is judged against the champion.
+- **Screens.** From A1 on, a full-data run takes about 2.5 hours. Cheap
+  hypotheses are first screened on the short recipe of T2.2d (one epoch on the
+  local sample, about 25 minutes), changed in one thing. Screens run with
+  `--calibrate`, so they are never accepted, and
+  `scripts/compare_runs.py` compares them with T2.2d under the same margin and
+  bootstrap. Only a screen that clears the margin is rerun on the champion's
+  recipe, as a real candidate.
+- **Git.** On acceptance: this log entry is written first, then
+  `git commit -am "feat: <change> (WP: <score>, <us> us)"`. On rejection or
+  failure: `git checkout -- . && git clean -fd`, then this log entry is written
+  and committed on its own, so rejected attempts are never lost.
+  `configs/champion.json` is tracked, so a revert restores it to the last
+  accepted champion. Run artifacts live in the ignored `runs/` directory, and
+  `runs/champion/` holds the champion's package and validation statistics.
+  The runner refuses to start if the two disagree.
+
+Each candidate is trained once, with seed 0 like the champion, so the margin
+above stands in for repeated seeds.
+
+## Result
+
+The champion is **A1: WP 0.680247** on the full validation set, up from the
+baseline's 0.617052 and past the 0.665 target. Latency is 42.5 µs as measured
+on the current host, or 52.6 µs rescaled to the 54 µs host. Its recipe:
+
+- warm start from the starter pack GRU;
+- fine-tuning on all 10,479 training sequences outside the holdout, for 2
+  epochs, with lr 2e-4 on a cosine schedule down to 1e-5;
+- hybrid loss, 0.8 × weighted Pearson + 0.2 × MSE;
+- output 2·tanh(z/8).
+
+The gains by step:
+
+| Step | Gain |
+|---|---|
+| E01, fine-tuning | +0.036 |
+| T2.1b, hybrid loss | +0.015 |
+| T2.2a/c/d, tanh temperature | +0.009 |
+| A1, all training data, 2 epochs | +0.003 |
+
+End-to-end check (for T2.2d, the phase-1 champion): the exported package,
+replayed row by row through the official scorer's `GlobalAccumulator` on all
+37.46M validation rows, scored 0.6772363. That is the batched score to 1e-15.
+
+Caveats: every decision used the one public validation set and mask, so the
+final figure carries some selection bias. The hidden test set is the unbiased
+check. WP over all required rows rose alongside, from 0.440 to 0.506.
+
+## Log
+
+Latency is shown as raw (unpinned median on this host) / rescaled (to the 54 µs
+host); both must be at most 60 µs. "All rows" is WP over every required
+validation row, ignoring the public mask.
+
+| ID | Test | Change | WP | All rows | Δ vs champion | P(better) | Latency µs raw / rescaled | Outcome |
+|---|---|---|---|---|---|---|---|---|
+| E00 | Baseline | Starter pack GRU weights, untrained | 0.617052 | 0.440156 | — | — | 30.0 / 51.9 | Accepted: first champion |
+| E01 | Control | Fine-tune the baseline 1 epoch: MSE, lr 2e-4 cosine, 3,872 sequences | 0.653042 | 0.473540 | +0.035990 | 1.000 | 31.6 / 48.2 | Accepted |
+| T1.1a | 1.1 OFI | Add sum(dp·dv) for i0 and i1 | 0.653104 | 0.473613 | +0.000062 | 1.000 | 37.5 / 57.5 | Voided: see notes; rerun as T1.1 |
+| CAL1 | Calibration | E01 recipe, seed 1 | 0.653276 | 0.473229 | +0.000234 | 0.765 | 33.3 / 51.3 | Calibration only |
+| CAL2 | Calibration | E01 recipe, seed 2 | 0.651986 | 0.471799 | −0.001056 | 0.000 | 32.7 / 53.0 | Calibration only |
+| T1.1 | 1.1 OFI | Add sum(dp·dv) over the 4 trade slots, i0 and i1 (2 inputs) | 0.653113 | 0.473619 | +0.000071 | 1.000 | 33.9 / 55.2 | Rejected: below the 0.0016 margin |
+| T1.2 | 1.2 Volume imbalance | Add (Σ bid v − Σ ask v) / (\|Σ bid\| + \|Σ ask\|), i0 and i1 (2 inputs) | 0.653030 | 0.473479 | −0.000012 | 0.089 | 38.2 / 59.9 | Rejected: no gain, at the latency ceiling |
+| T1.3 | 1.3 VWAP mid spread | Add mid(i0) − mid(i1), mid = mean of bid and ask VWAPs (1 input) | 0.653062 | 0.473547 | +0.000020 | 1.000 | 43.9 / 68.7 | Rejected: over the latency ceiling, no gain |
+| T2.1a | 2.1 Loss | Pure weighted Pearson loss (1 − WP per training window) instead of MSE | 0.626199 | 0.452891 | −0.026844 | 0.000 | 33.6 / 50.2 | Rejected: much worse |
+| T2.1b | 2.1 Loss | Hybrid loss: 0.8 × weighted Pearson + 0.2 × MSE | **0.667873** | 0.497689 | +0.014831 | 1.000 | 32.1 / 51.2 | **Accepted** |
+| T2.2a | 2.2 Tanh clamp | Output 2·tanh(z/τ) with τ = 2 (unit slope at 0) | **0.669708** | 0.498827 | +0.001835 | 1.000 | 31.5 / 55.7 | **Accepted** (just above the margin) |
+| T2.2b | 2.2 Tanh clamp | τ = 1 instead of 2 (slope 2 at 0, earlier saturation) | 0.665566 | 0.492818 | −0.004142 | 0.000 | 37.4 / 51.2 | Rejected: worse |
+| T2.2c | 2.2 Tanh clamp | τ = 4 instead of 2 (slope 0.5 at 0, nearly linear in range) | **0.673977** | 0.503062 | +0.004269 | 1.000 | 34.1 / 54.1 | **Accepted** |
+| T2.2d | 2.2 Tanh clamp | τ = 8 instead of 4 (extends the sweep past its edge) | **0.677236** | 0.505950 | +0.003259 | 1.000 | 36.2 / 53.4 | **Accepted** |
+| T2.2e | 2.2 Tanh clamp | τ = 16 instead of 8 | 0.678451 | 0.506879 | +0.001215 | 1.000 | 35.1 / 53.4 | Rejected: inside the noise margin |
+| T3.1a | 3.1 Residual GRU | Residual block 2, hidden 128: + α·input, α learnable, 0 at init | 0.677236 | 0.505928 | −0.000000 | 0.471 | 38.5 / 56.9 | Rejected: no effect |
+| T3.1b | 3.1 Residual GRU | Hidden 96, residual, warm start from the baseline's 96 most-used units | 0.676707 | 0.503906 | −0.000530 | 0.196 | 31.8 / 50.6 | Rejected: a tie, not a gain |
+| T3.1c | 3.1 Residual GRU | Hidden 64, residual, warm start from the baseline's 64 most-used units | 0.670673 | 0.494898 | −0.006564 | 0.000 | 28.9 / 43.5 | Rejected: worse |
+| T3.2 | 3.2 LayerNorm | LayerNorm on each gate's input and recurrent pre-activations, warm start | 0.672211 | 0.496028 | −0.005026 | 0.000 | 62.1 / 97.1 | Rejected: worse and over both latency limits |
+| T3.3 | 3.3 LRU | 2 diagonal LRU layers (width 128, complex state 128), from scratch, lr 1e-3 | 0.648288 | 0.465312 | −0.028948 | 0.000 | 61.2 / 92.3 | Rejected: worse and over both latency limits |
+| A1a | A1 Full data | All 10,479 training sequences (6,607 streamed from the archive), 2 epochs, cosine 2e-4 → 1e-5 | — | — | — | — | — | Failed: out of memory at batch 4 of 80; loader fixed, rerun as A1 |
+| A1 | A1 Full data | Same as A1a, with the fixed loader | **0.680247** | 0.508755 | +0.003011 | 1.000 | 42.5 / 52.6 | **Accepted** |
+| A3a | A3 Weight averaging | Polyak EMA (decay 0.999) of the weights over the last 30% of steps, returned instead of the final weights | 0.680174 | 0.508703 | −0.000073 | 0.121 | 30.3 / 50.6 | Rejected: no effect |
+| S3b-0.85 | A3b Loss ratio, screen | Hybrid α = 0.85 instead of 0.8, on the T2.2d recipe | 0.677458 | 0.506345 | +0.000222 vs T2.2d | 1.000 | 33.3 / 53.8 | Screen: below the margin |
+| S3b-0.90 | A3b Loss ratio, screen | α = 0.90 | 0.677836 | 0.506892 | +0.000599 vs T2.2d | 1.000 | 31.7 / 54.2 | Screen: below the margin |
+| S3b-0.95 | A3b Loss ratio, screen | α = 0.95 | 0.678312 | 0.507432 | +0.001075 vs T2.2d | 1.000 | 32.2 / 51.5 | Screen: below the margin, still rising |
+| S3b-1.0 | A3b Loss ratio, screen | α = 1.0: pure weighted Pearson, with the tanh clamp | 0.679133 | 0.508098 | +0.001896 vs T2.2d | 1.000 | 33.1 / 47.7 | **Screen: clears the margin**; rerun on full data as A3b |
+| A3b-0 | A3b Loss ratio | α = 1.0 on the full-data recipe | — | — | — | — | — | Failed: corrupt archive bytes at batch 13 of 80; reader hardened, rerun as A3b |
+
+## Notes
+
+**E01 (control).** One epoch of fine-tuning, 1,200 steps, lifted validation WP
+by 0.036, and WP over all required rows rose from 0.440 to 0.474. The holdout
+WP (all required rows) went 0.392 → 0.397 → 0.408 → 0.410 → 0.409 over the
+epoch, so it was flattening at the end. The baseline shows no in-sample
+advantage on the training sample, so it was likely undertrained rather than
+fitted to these sequences. Every later change is made on top of this recipe.
+
+**T1.1a (voided).** The first version of the rule accepted OFI for a gain of
++0.000062 (bootstrap sd 0.000019, P = 1.000). That gain is a tenth of the
+seed-to-seed noise measured afterwards, and it cost about 4 µs of latency
+(rescaled 57.5 µs, most of the headroom). The rule had no margin for training
+noise, so it would also have accepted a pure reseed. The result was reverted
+before it was committed, the judge was corrected, and 1.1 is rerun below.
+
+**Calibration.** CAL1 and CAL2 rerun the E01 recipe with seeds 1 and 2 through
+`scripts/run_experiment.py --calibrate`, which never accepts. They set the
+0.0016 margin. They also showed that latency medians drift between runs, while
+the fastest pinned runs are stable, so the rescaled check now uses fastest
+runs over nine pairs. The feature layer lost a redundant Concat and a global
+Clip, so each feature costs only its own ops.
+
+**T1.1.** Hypothesis: an explicit dp·dv product gives the GRU an order-flow
+signal it cannot form in one linear step. On this data it adds almost nothing.
+WP rose by 0.000071, consistent across validation sequences (P = 1.000) but a
+tenth of the seed noise, and all-rows WP moved by +0.00008. The holdout curve
+tracked the control to the fourth decimal. It cost about 1.5 µs pinned, so it
+was rejected and reverted. The trade columns are rank-transformed, so their
+product is not the financial dp·dv, which likely explains the null result.
+
+**T1.2.** Hypothesis: book-side volume imbalance is a classic short-horizon
+predictor of price moves. Here it is neutral: WP moved by −0.000012 and
+all-rows WP by −0.00006. The imbalance is a fixed linear combination of inputs
+the first GRU layer already sees, divided by a normalizer, so the model gains
+little it could not already form. It cost about 5 µs pinned (a matmul plus
+slices, abs, add and divide), which alone brought the rescaled latency to the
+ceiling. The denominator is |Σ bid| + |Σ ask| rather than the literal
+Σ v_total, because the rank-transformed volumes are signed and their sum
+crosses zero (min |Σ v_total| 4.6e-5 over four validation sequences).
+
+**T1.3.** Hypothesis: the cross-instrument mid-price spread carries lead-lag
+information between i0 and i1. The gain is +0.000020, a thirtieth of the seed
+noise, and it cost about 9.5 µs pinned: 44-column gathers, a sigmoid, reshapes,
+reductions and divisions, 68.7 µs rescaled. Each level is weighted by
+sigmoid(1.702 v), about the volume's percentile, because the rank-transformed
+volumes are signed and cannot weight a VWAP directly. The price-like columns
+are also rank-transformed per column, so a difference of "mids" across
+instruments is not a price spread, which likely explains the null result.
+
+**Cycle 1 summary.** None of the three engineered features helped: the gains
+were +0.00007, −0.00001 and +0.00002, against a 0.0016 noise margin. The
+anonymising rank transforms remove the price and volume arithmetic these
+features rely on, and the GRU already sees every raw column. Each feature also
+costs 1.5-9.5 µs per call, out of about 11 µs of rescaled headroom.
+
+**T2.1a.** Hypothesis: optimizing the metric directly beats MSE. The holdout
+WP matched the control (0.4094 vs 0.4092), but validation WP fell by 0.027.
+The loss ignores the level and scale of the outputs within each window, so
+both drifted. On six validation sequences the predictions had sd 1.74 (MSE
+model: 0.33), a mean near +1.3, and 30% of rows beyond ±2, where the metric
+clips them. The ranking was fine; the calibration was lost. This is the
+failure the hybrid's MSE term and the 2.2 tanh clamp are meant to contain.
+
+**T2.1b.** Hypothesis: the Pearson term aligns training with the metric, and a
+small MSE term keeps the outputs calibrated, which pure Pearson lost. WP rose
+by 0.0148, nine times the noise margin, to 0.667873, past the 0.665 target.
+All-rows WP rose from 0.474 to 0.498, so the gain is not an artefact of the
+public mask. The holdout WP climbed to 0.433, against the control's 0.409, from
+the first evaluation onward. Latency is unchanged, since only the loss changed.
+
+**T2.2a.** Hypothesis: softly bounding outputs to the metric's [−2, 2] tames the
+rare large predictions, which the metric clips anyway, while keeping slope 1 near
+zero. WP rose by 0.0018, just above the 0.0016 margin. Three signals agree:
+all-rows WP +0.0011, holdout +0.0017, and the clamp alone lifted the untrained
+baseline's holdout from 0.392 to 0.402. The hybrid model's outputs have
+sd 0.40 and none reach ±2, so the gain comes from compressing the tails, not
+from clamping. The clamp adds three small ops; the rescaled latency moved from
+51.2 to 55.7 µs, partly from noise in the reference runs.
+
+**T2.2b.** A sharper clamp, 2·tanh(z), saturates for |z| above about 0.5, which
+compresses much of the model's range (sd about 0.4). It also distorts the warm
+start: the untrained holdout WP fell to 0.369, against 0.402 at τ = 2. Training
+recovered only partly (holdout 0.4265 vs 0.4344), and validation WP dropped by
+0.0041.
+
+**T2.2c.** At τ = 4 the clamp is nearly linear across the model's range, with
+slope 0.5 at zero, so it mostly halves the warm start's output scale. The
+untrained holdout WP rose to 0.425, against 0.402 at τ = 2 and 0.392 with no
+clamp. So the baseline's raw outputs overshoot on these sequences and the
+metric clips them. After training, validation WP rose by 0.0043 over τ = 2 and
+all-rows WP by 0.0042. Over the sweep, WP rises monotonically with τ (1: 0.6656,
+2: 0.6697, 4: 0.6740), so the best value may lie beyond the grid; τ = 8 is
+tested next to find out.
+
+**T2.2d.** WP keeps rising with τ: +0.0033 from τ = 4 to 8, after +0.0043 from
+2 to 4. For large τ, 2·tanh(z/τ) is about 2z/τ over the model's range, so this
+is mainly a smaller output scale at the warm start rather than clamping. That
+starting scale seems to shape how the hybrid loss fine-tunes the network. The
+untrained holdout WP at τ = 8 was 0.433, and the trained holdout reached 0.445.
+τ = 16 is next, to find where the curve flattens.
+
+**T2.2e.** τ = 16 gained only +0.0012, inside the 0.0016 margin, and the
+holdout ended slightly below τ = 8 (0.4442 vs 0.4447). The sweep has flattened,
+so τ = 8 stays.
+
+**Cycle 2 summary.** The loss was the big lever. The hybrid loss added +0.0148.
+Pure Pearson lost 0.027, because without an MSE anchor the output scale and
+level drifted and 30% of predictions ended beyond the metric's clip. The tanh
+temperature added another +0.0074 over τ = 2 → 4 → 8, where the curve
+flattens:
+
+| τ | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| WP | 0.6656 | 0.6697 | 0.6740 | 0.6772 | 0.6785 |
+
+For large τ the clamp mostly shrinks the warm start's output scale, so the
+gain is better read as "start the output small" than as clamping.
+
+**T3.1a.** The residual scale starts at zero so the warm start is exact, and
+training can open the skip path if it helps. It moved only to α = −0.018, and
+no weight drifted more than 0.0024 from the champion's. WP matched the
+champion to six decimals. So in one fine-tuning epoch, the model does not use
+a skip path around its second GRU. The two extra ops still cost latency.
+
+**T3.1b.** Narrowing to 96 units keeps, in each block, the units the next layer
+or the head relies on most. The pruned warm start scored 0.41498 on the
+holdout at step 0, against 0.433 for the full model. After the epoch,
+validation WP was within noise of the champion (−0.0005, P = 0.20) at lower
+latency (50.6 µs rescaled, against 53.4). That is a genuine trade-off, but the
+rule accepts only improvements, so it was reverted. It is the better base if a
+later change needs latency headroom.
+
+**T3.1c.** At 64 units the pruned warm start began at 0.33781 on the holdout and
+ended at 0.4186, against 0.4447 for the champion. Validation WP fell by 0.0066.
+It is by far the fastest variant (43.5 µs rescaled), but one fine-tuning epoch
+does not recover the capacity the pruning removed.
+
+**3.1 summary.** WP by width:
+
+| Hidden | 128 | 96 | 64 |
+|---|---|---|---|
+| WP | 0.6772 | 0.6767 | 0.6707 |
+
+The residual path is unused at 128. Dropping to 96 units is free in accuracy
+and saves about 3 µs rescaled, and 64 units costs 0.007 WP.
+
+**T3.2.** The cell normalizes each gate's W_i x and W_h h over its hidden units
+before the bias and activation. It keeps nn.GRU's parameters, so the baseline
+weights load, and it matches nn.GRU to 2e-7 with the norms off. Normalizing
+wrecks the warm start: the untrained holdout WP fell from 0.433 to 0.267, and
+one epoch recovered only to 0.419 (champion 0.445). Validation WP fell by
+0.0050. The unfused cell is also slow at batch 1. Each layer exports to about
+120 ONNX ops, against one fused GRU op, so latency was 62.1 µs even as
+measured, over the literal 60 µs rule. Training was 40% slower too
+(40k rows/s, against 73k).
+
+**T3.3.** The LRU (Orvieto et al. 2023) keeps a complex diagonal state with
+|λ| < 1. That state is stored as a real [Re, Im] vector so it exports, and
+each layer adds a residual MLP. It has no pretrained weights, so it trains from
+scratch. It also uses a from-scratch learning rate, 1e-3 instead of 2e-4, a
+necessary second difference from the champion recipe. In one epoch from random
+weights it reached 0.648, close to the fine-tuned MSE GRU (0.653), so the
+architecture is competitive in accuracy. But batch-1 inference pays per-op
+overhead: 61.2 µs measured, about 1.7× the starter pack's fused GRU op.
+Row-by-row parity was exact (7e-7).
+
+**Cycle 3 summary.** No architecture change beat the champion within the
+latency limits. The residual path went unused. Narrowing to 96 units ties at
+lower latency, and 64 units costs 0.007. The LayerNorm cell and the LRU are
+both too slow at batch 1 as unfused ONNX graphs. The LRU is the one worth
+revisiting with a longer from-scratch schedule and a fused or folded export.
+
+**A1a.** The first full-data run was killed by the out-of-memory killer at
+13.9 GB, as its first streamed batch was decoded. The loader built each batch
+of 256 sequences through two full-size intermediate copies: the Arrow table,
+then per-column NumPy arrays concatenated across row groups. It peaked at
+about 3.3× the 2.3 GB batch, and two batches are in flight while training
+overlaps loading. It now decodes one row group at a time straight into
+preallocated batch arrays. On 128 sequences that peaks at 1.64 GB instead of
+3.76 GB, and runs in 2.8 s instead of 4.3-5.8 s. It produces identical arrays.
+
+**A1.** Hypothesis: the model saw 37% of the training set, and its holdout
+curve was still rising after one epoch. More data should extend the
+fine-tuning gain. Two epochs over 10,479 sequences made 80 batches, 6,400
+steps, against 1,200 for T2.2d. The archive streamed all 6,607 remote
+sequences in each epoch, without a single broken connection. Peak memory was
+11.1 GB, and training took 2.46 hours at 46k rows/s on this host.
+
+Validation WP rose by +0.0030 (t0 +0.0038, t1 +0.0022, P = 1.000), and WP over
+all rows by +0.0028. That clears the margin, but it is below the +0.005 to
++0.015 expected. The holdout peaked at the end of the first epoch (0.4499 at
+step 3,200), dipped to 0.4453 early in the second, and ended at 0.4478. The
+holdout is only 128 sequences and probably in-sample for the baseline, so this
+hints, without showing, that the second epoch added little. Latency is
+unchanged in the rescaled terms that compare hosts: ratio 0.973 against 0.989
+for T2.2d, the same architecture.
+
+**A3a.** Hypothesis: averaging late iterates lands in a flatter region than the
+final weights, which should generalize better when gradients are noisy. The EMA
+(decay 0.999, a horizon of about 1,000 steps) ran over steps 4,480-6,400 and
+replaced the final weights. Training retraced A1 bit for bit: every batch
+loss, and the raw final holdout WP of 0.44777, matched. So the difference is
+the averaging alone. The EMA raised the holdout by 0.0003 but moved validation
+WP by −0.00007 (P = 0.12), no effect. With the cosine schedule already down to
+1e-5, the last 1,920 iterates barely move, and averaging them changes little.
+A constant or cyclic learning-rate tail would give averaging more to work
+with, but that changes two things at once.
+
+This was also the first package exported as the lean one-row graph: 7 runtime
+ops instead of 12. Its latency ratio to the starter pack was 0.936, against
+0.973 for A1's package of the same architecture. The container had moved
+again, to a faster host: the starter pack measured 30.4 µs pinned, against
+35.2 µs in the A1 run.
+
+**S3b (α sweep, screens).** Hypothesis: with the tanh clamp now bounding the
+outputs, more weight on the metric-aligned Pearson term can be tolerated.
+The MSE term was there to anchor level and scale (T2.1a). On the T2.2d recipe:
+
+| α | 0.80 (T2.2d) | 0.85 | 0.90 | 0.95 |
+|---|---|---|---|---|
+| WP | 0.677236 | 0.677458 | 0.677836 | 0.678312 |
+| All rows | 0.505950 | 0.506345 | 0.506892 | 0.507432 |
+| Holdout | 0.44466 | 0.44522 | 0.44607 | 0.44692 |
+
+Validation WP, all-rows WP and the holdout all rise with α, and the steps grow.
+No single step clears the 0.0016 margin, though; the largest is +0.0011 at
+0.95. The curve has not peaked at the edge of the requested range, so the
+sweep continues past it, as the τ sweep did.
+
+At α = 1.0, pure weighted Pearson, WP is 0.679133: +0.0019 over T2.2d
+(P = 1.000), clearing the margin, and +0.0008 over α = 0.95. The holdout rose
+to 0.44795. Pure Pearson lost 0.027 in T2.1a because outputs drifted past the
+metric's clip; the tanh clamp now bounds them, which was the MSE term's job,
+so the MSE term only pulls the fit away from the metric. The full-data
+recipe with α = 1.0 is the real candidate, A3b.
+
+**A3b-0.** The first full-data run with α = 1.0 failed at batch 13. The
+archive stream stopped inflating 17 GB in ("invalid distance code"), so the
+bytes the reader received were not the archive's. The likeliest cause is
+curl's own `--retry`. A retried transfer restarts its byte range and writes it
+to stdout after the part already written, so the reader sees repeated bytes.
+The proxy logged no failure for the archive host, so this is not proven.
+The reader now guards against bad bytes from any source:
+
+- it no longer uses curl's retry;
+- it decodes and checks every row group before handing it over: one whole
+  sequence, with finite features within ±8 (real features stay within
+  ±5.2);
+- when a row group fails the check, or the stream stops inflating, it reads
+  that row group again from the last snapshot before its start, going one
+  snapshot further back on each repeat.
+
+It addresses row groups by their offset in the uncompressed stream (tar data
+offset 1,589,760) instead of reading through `tarfile`. On the real archive,
+sequence 3,999 still decodes identically to the local sample.
