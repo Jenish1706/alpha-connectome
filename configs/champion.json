@@ -1,19 +1,19 @@
 {
-  "name": "T2.2d-tanh-tau8",
-  "description": "Test 2.2d. Extend the temperature sweep past its edge, tau = 8 instead of 4.",
-  "wp": 0.6772363416970535,
-  "t0": 0.6721193430129762,
-  "t1": 0.6823533403811309,
-  "wp_all_rows": 0.5059499374660721,
-  "latency_us": 36.18311842105263,
-  "latency_scaled_us": 53.42545015378708,
-  "latency_ratio": 0.9893601880330941,
-  "latency_pinned_us": 31.861549548872183,
-  "reference_latency_us": 32.204196140350874,
-  "run_dir": "runs/20260924T124838-T2.2d-tanh-tau8",
+  "name": "A1-full-data-2ep",
+  "description": "Axis 1. Fit all 10,479 training sequences (6,607 streamed from the archive) for 2 epochs, cosine 2e-4 to 1e-5.",
+  "wp": 0.6802469024678262,
+  "t0": 0.6758705563621115,
+  "t1": 0.6846232485735408,
+  "wp_all_rows": 0.5087549584460627,
+  "latency_us": 42.458270200501254,
+  "latency_scaled_us": 52.5650797258927,
+  "latency_ratio": 0.9734274023313463,
+  "latency_pinned_us": 34.28313448621554,
+  "reference_latency_us": 35.218994661654136,
+  "run_dir": "runs/20260929T104651-A1-full-data-2ep",
   "config": {
-    "name": "T2.2d-tanh-tau8",
-    "description": "Test 2.2d. Extend the temperature sweep past its edge, tau = 8 instead of 4.",
+    "name": "A1-full-data-2ep",
+    "description": "Axis 1. Fit all 10,479 training sequences (6,607 streamed from the archive) for 2 epochs, cosine 2e-4 to 1e-5.",
     "seed": 0,
     "init": "baseline",
     "features": [],
@@ -23,18 +23,20 @@
       "tanh_tau": 8.0
     },
     "train": {
-      "epochs": 1,
+      "epochs": 2,
       "batch_sequences": 256,
       "chunk": 250,
       "lr": 0.0002,
+      "min_lr": 1e-05,
       "weight_decay": 0.0,
       "grad_clip": 1.0,
       "warmup_steps": 20,
       "loss": "hybrid",
+      "full_data": true,
       "fit_sequences": 3872,
       "holdout": 128,
-      "eval_every": 4
+      "eval_every": 8
     }
   },
-  "finished": "2026-09-24T13:11:53+00:00"
+  "finished": "2026-09-29T13:25:59+00:00"
 }

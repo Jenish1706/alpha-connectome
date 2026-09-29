@@ -2,7 +2,8 @@
 
 Research loop toward Global WP 0.665+ on the validation set, starting from the
 starter pack GRU baseline (0.617052). Each iteration changes one thing relative
-to the current champion, then runs `python scripts/run_experiment.py`.
+to the current champion, then runs `python scripts/run_experiment.py`. A second
+phase aims at 0.685 along four axes (A1-A4), planned in `research_notes.md`.
 
 ## Protocol
 
@@ -11,7 +12,9 @@ to the current champion, then runs `python scripts/run_experiment.py`.
   used for fitting. The last 128 are a holdout, scored during training as a
   diagnostic only: the baseline was most likely fitted on those sequences, so
   its holdout score is in-sample. The 1,873 validation sequences are used only
-  for scoring.
+  for scoring. With `full_data` (from A1 on), each epoch also fits the 6,607
+  sequences past the sample, streamed from the starter pack archive without
+  touching disk (`src/training/remote.py`); the holdout is unchanged.
 - **Recipe.** Models warm-start from the starter pack baseline weights (two
   GRU blocks of width 128 and a linear head). New input features get zero input
   weights, so a warm-started model begins exactly at the baseline. Training
@@ -40,7 +43,10 @@ to the current champion, then runs `python scripts/run_experiment.py`.
 
   The rescaled check is the binding one here. It keeps the ceiling's original
   margin under the scorer's budget: 60 minutes for 39.4M test rows, about
-  91 µs a row on the scorer's own hardware.
+  91 µs a row on the scorer's own hardware. From A1 on, runs happen on a
+  slower host: the starter pack measures 35.2 µs pinned there, against 32.2 µs
+  before, so raw figures from the two hosts differ for the same model while
+  the rescaled ones stay comparable.
 - **Acceptance.** A candidate is accepted when all of these hold:
   - both latency checks pass,
   - WP beats the champion's WP by at least 0.0016,
@@ -68,26 +74,28 @@ above stands in for repeated seeds.
 
 ## Result
 
-The champion is **T2.2d: WP 0.677236** on the full validation set, up from
-the baseline's 0.617052 and past the 0.665 target. Latency is 36.2 µs as
-measured, or 53.4 µs rescaled to the 54 µs host. Its recipe:
+The champion is **A1: WP 0.680247** on the full validation set, up from the
+baseline's 0.617052 and past the 0.665 target. Latency is 42.5 µs as measured
+on the current host, or 52.6 µs rescaled to the 54 µs host. Its recipe:
 
 - warm start from the starter pack GRU;
-- one epoch of fine-tuning on 3,872 training sequences;
+- fine-tuning on all 10,479 training sequences outside the holdout, for 2
+  epochs, with lr 2e-4 on a cosine schedule down to 1e-5;
 - hybrid loss, 0.8 × weighted Pearson + 0.2 × MSE;
 - output 2·tanh(z/8).
 
-Two steps carry the gain:
+The gains by step:
 
 | Step | Gain |
 |---|---|
 | E01, fine-tuning | +0.036 |
 | T2.1b, hybrid loss | +0.015 |
 | T2.2a/c/d, tanh temperature | +0.009 |
+| A1, all training data, 2 epochs | +0.003 |
 
-End-to-end check: the exported package (`runs/champion/package`), replayed
-row by row through the official scorer's `GlobalAccumulator` on all 37.46M
-validation rows, scores 0.6772363. That is the batched score to 1e-15.
+End-to-end check (for T2.2d, the phase-1 champion): the exported package,
+replayed row by row through the official scorer's `GlobalAccumulator` on all
+37.46M validation rows, scored 0.6772363. That is the batched score to 1e-15.
 
 Caveats: every decision used the one public validation set and mask, so the
 final figure carries some selection bias. The hidden test set is the unbiased
@@ -122,6 +130,7 @@ validation row, ignoring the public mask.
 | T3.2 | 3.2 LayerNorm | LayerNorm on each gate's input and recurrent pre-activations, warm start | 0.672211 | 0.496028 | −0.005026 | 0.000 | 62.1 / 97.1 | Rejected: worse and over both latency limits |
 | T3.3 | 3.3 LRU | 2 diagonal LRU layers (width 128, complex state 128), from scratch, lr 1e-3 | 0.648288 | 0.465312 | −0.028948 | 0.000 | 61.2 / 92.3 | Rejected: worse and over both latency limits |
 | A1a | A1 Full data | All 10,479 training sequences (6,607 streamed from the archive), 2 epochs, cosine 2e-4 → 1e-5 | — | — | — | — | — | Failed: out of memory at batch 4 of 80; loader fixed, rerun as A1 |
+| A1 | A1 Full data | Same as A1a, with the fixed loader | **0.680247** | 0.508755 | +0.003011 | 1.000 | 42.5 / 52.6 | **Accepted** |
 
 ## Notes
 
@@ -304,3 +313,19 @@ about 3.3× the 2.3 GB batch, and two batches are in flight while training
 overlaps loading. It now decodes one row group at a time straight into
 preallocated batch arrays. On 128 sequences that peaks at 1.64 GB instead of
 3.76 GB, and runs in 2.8 s instead of 4.3-5.8 s. It produces identical arrays.
+
+**A1.** Hypothesis: the model saw 37% of the training set, and its holdout
+curve was still rising after one epoch. More data should extend the
+fine-tuning gain. Two epochs over 10,479 sequences made 80 batches, 6,400
+steps, against 1,200 for T2.2d. The archive streamed all 6,607 remote
+sequences in each epoch, without a single broken connection. Peak memory was
+11.1 GB, and training took 2.46 hours at 46k rows/s on this host.
+
+Validation WP rose by +0.0030 (t0 +0.0038, t1 +0.0022, P = 1.000), and WP over
+all rows by +0.0028. That clears the margin, but it is below the +0.005 to
++0.015 expected. The holdout peaked at the end of the first epoch (0.4499 at
+step 3,200), dipped to 0.4453 early in the second, and ended at 0.4478. The
+holdout is only 128 sequences and probably in-sample for the baseline, so this
+hints, without showing, that the second epoch added little. Latency is
+unchanged in the rescaled terms that compare hosts: ratio 0.973 against 0.989
+for T2.2d, the same architecture.
