@@ -131,6 +131,7 @@ validation row, ignoring the public mask.
 | T3.3 | 3.3 LRU | 2 diagonal LRU layers (width 128, complex state 128), from scratch, lr 1e-3 | 0.648288 | 0.465312 | −0.028948 | 0.000 | 61.2 / 92.3 | Rejected: worse and over both latency limits |
 | A1a | A1 Full data | All 10,479 training sequences (6,607 streamed from the archive), 2 epochs, cosine 2e-4 → 1e-5 | — | — | — | — | — | Failed: out of memory at batch 4 of 80; loader fixed, rerun as A1 |
 | A1 | A1 Full data | Same as A1a, with the fixed loader | **0.680247** | 0.508755 | +0.003011 | 1.000 | 42.5 / 52.6 | **Accepted** |
+| A3a | A3 Weight averaging | Polyak EMA (decay 0.999) of the weights over the last 30% of steps, returned instead of the final weights | 0.680174 | 0.508703 | −0.000073 | 0.121 | 30.3 / 50.6 | Rejected: no effect |
 
 ## Notes
 
@@ -329,3 +330,20 @@ holdout is only 128 sequences and probably in-sample for the baseline, so this
 hints, without showing, that the second epoch added little. Latency is
 unchanged in the rescaled terms that compare hosts: ratio 0.973 against 0.989
 for T2.2d, the same architecture.
+
+**A3a.** Hypothesis: averaging late iterates lands in a flatter region than the
+final weights, which should generalize better when gradients are noisy. The EMA
+(decay 0.999, a horizon of about 1,000 steps) ran over steps 4,480-6,400 and
+replaced the final weights. Training retraced A1 bit for bit: every batch
+loss, and the raw final holdout WP of 0.44777, matched. So the difference is
+the averaging alone. The EMA raised the holdout by 0.0003 but moved validation
+WP by −0.00007 (P = 0.12), no effect. With the cosine schedule already down to
+1e-5, the last 1,920 iterates barely move, and averaging them changes little.
+A constant or cyclic learning-rate tail would give averaging more to work
+with, but that changes two things at once.
+
+This was also the first package exported as the lean one-row graph: 7 runtime
+ops instead of 12. Its latency ratio to the starter pack was 0.936, against
+0.973 for A1's package of the same architecture. The container had moved
+again, to a faster host: the starter pack measured 30.4 µs pinned, against
+35.2 µs in the A1 run.
